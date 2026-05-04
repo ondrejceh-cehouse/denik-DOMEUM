@@ -1,6 +1,10 @@
 """
 main.py – Hlavní orchestrátor stavebního deníku
-Spouštěn GitHub Actions každý večer. Koordinuje Drive → AI → domeum.app pipeline.
+Podporuje VÍCE projektů najednou:
+  - Přihlásí se na domeum.app
+  - Zjistí seznam všech projektů
+  - Pro každý projekt hledá složku na Google Drive se SHODNÝM názvem
+  - Zpracuje nové fotky a vytvoří záznamy v příslušném stavebním deníku
 """
 
 import asyncio
@@ -12,7 +16,6 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-# Přidáme src do cesty
 sys.path.insert(0, str(Path(__file__).parent))
 
 from google_drive_client import (
@@ -35,8 +38,6 @@ from state_manager import (
     get_stats,
 )
 
-# ─────────────────────────────── Logging ──────────────────────────────────────
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s – %(message)s",
@@ -45,45 +46,57 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-# ─────────────────────────────── Konfigurace ──────────────────────────────────
-
-MAIN_FOLDER_ID   = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
-PROJECT_NAME     = os.environ.get("DOMEUM_PROJECT_NAME", "RD Cehovi")
-DRY_RUN          = os.environ.get("DRY_RUN", "false").lower() == "true"
-
-# Maximální počet fotek na jeden den (ochrana před obrovskými batchy)
+MAIN_FOLDER_ID = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
+DRY_RUN        = os.environ.get("DRY_RUN", "false").lower() == "true"
 MAX_PHOTOS_PER_DAY = 30
 
 
-# ─────────────────────────────── Zpracování složky ────────────────────────────
-
-async def process_folder(
-    drive_service,
-    gemini_model,
-    domeum: DomeumClient,
-    folder: dict,
-    state: dict,
-    temp_dir: str,
-) -> int:
+def match_projects_to_folders(domeum_projects, drive_folders):
     """
-    Zpracuje jednu podsložku (= jednu akci stavby).
-    Vrátí počet vytvořených zápisů.
+    Spáruje domeum projekty s Google Drive složkami podle shodného názvu.
+    Porovnání je case-insensitive.
     """
-    folder_id   = folder["id"]
-    folder_name = folder["name"]
+    matches = []
+    drive_map = {f["name"].strip().lower(): f for f in drive_folders}
 
-    logger.info(f"")
-    logger.info(f"═══════════════════════════════════════════")
-    logger.info(f"📁 Složka: {folder_name}")
-    logger.info(f"═══════════════════════════════════════════")
+    for project in domeum_projects:
+        project_name = project["name"].strip()
+        key = project_name.lower()
 
-    # Stáhnout seznam všech fotek
-    all_photos = get_photos_in_folder(drive_service, folder_id)
-    if not all_photos:
-        logger.info("  Žádné fotky v složce, přeskakuji.")
+        if key in drive_map:
+            folder = drive_map[key]
+            matches.append({
+                "project_name": project_name,
+                "folder_id":    folder["id"],
+                "folder_name":  folder["name"],
+            })
+            logger.info(f"  ✅ Spárováno: '{project_name}' ↔ Drive složka '{folder['name']}'")
+        else:
+            logger.info(f"  ⏭️  Bez párování: '{project_name}' – složka na Drive nenalezena")
+
+    return matches
+
+
+async def process_project_folder(drive_service, gemini_model, domeum, project_name, folder_id, state, temp_dir):
+    """Zpracuje fotky z Google Drive a zapíše do stavebního deníku projektu."""
+    logger.info("")
+    logger.info("═══════════════════════════════════════════════════")
+    logger.info(f"🏗️  PROJEKT: {project_name}")
+    logger.info("═══════════════════════════════════════════════════")
+
+    if not await domeum.select_project_by_name(project_name):
+        logger.error(f"  Nelze přepnout na projekt '{project_name}', přeskakuji.")
         return 0
 
-    # Filtrovat nové (nezpracované) fotky
+    if not await domeum.navigate_to_diary():
+        logger.error(f"  Stavební deník nenalezen, přeskakuji.")
+        return 0
+
+    all_photos = get_photos_in_folder(drive_service, folder_id)
+    if not all_photos:
+        logger.info("  Žádné fotky v složce.")
+        return 0
+
     new_photos = [p for p in all_photos if not is_photo_processed(state, folder_id, p["id"])]
     logger.info(f"  Celkem fotek: {len(all_photos)} | Nových: {len(new_photos)}")
 
@@ -91,106 +104,68 @@ async def process_folder(
         logger.info("  Žádné nové fotky, přeskakuji.")
         return 0
 
-    # ── Stáhnout fotky a přečíst datum ──────────────────────────────────────
-    photos_by_date: dict[str, list] = defaultdict(list)
-    download_errors = 0
-
+    photos_by_date = defaultdict(list)
     for photo in new_photos:
         dest = os.path.join(temp_dir, f"{photo['id']}_{photo['name']}")
         try:
             fallback = photo.get("createdTime", "")[:10]
             local_path = download_photo(drive_service, photo["id"], photo["mimeType"], dest)
             date = get_photo_date(local_path, fallback)
-            photos_by_date[date].append({
-                "id":    photo["id"],
-                "name":  photo["name"],
-                "path":  local_path,
-                "date":  date,
-            })
-            logger.debug(f"  ✓ {photo['name']} → {date}")
+            photos_by_date[date].append({"id": photo["id"], "name": photo["name"], "path": local_path, "date": date})
         except Exception as e:
-            logger.warning(f"  ✗ Chyba stahování {photo['name']}: {e}")
-            download_errors += 1
+            logger.warning(f"  ✗ {photo['name']}: {e}")
 
-    if download_errors:
-        logger.warning(f"  Chyby stahování: {download_errors}/{len(new_photos)}")
-
-    # ── Zpracovat každé datum ─────────────────────────────────────────────────
     entries_created = 0
 
     for date in sorted(photos_by_date.keys()):
         date_photos = photos_by_date[date]
         czech_date  = format_date_czech(date)
+        logger.info(f"\n  📅 {czech_date} ({len(date_photos)} fotek)")
 
-        logger.info(f"")
-        logger.info(f"  📅 Datum: {czech_date} ({len(date_photos)} fotek)")
-
-        # Kontrola duplikátů
         if has_diary_entry(state, folder_id, date):
-            logger.info(f"  ℹ️  Zápis pro {czech_date} již existuje, označuji fotky a přeskakuji.")
+            logger.info(f"  ℹ️  Zápis již existuje, označuji fotky.")
             for p in date_photos:
                 mark_photo_processed(state, folder_id, p["id"], date)
             continue
 
-        # Omezení počtu fotek na den
         if len(date_photos) > MAX_PHOTOS_PER_DAY:
-            logger.warning(f"  Příliš mnoho fotek ({len(date_photos)}), beru prvních {MAX_PHOTOS_PER_DAY}")
             date_photos = date_photos[:MAX_PHOTOS_PER_DAY]
 
         photo_paths = [p["path"] for p in date_photos]
 
-        # ── AI analýza ────────────────────────────────────────────────────────
-        logger.info(f"  🤖 Generuji AI zápis pro '{folder_name}' – {czech_date}...")
-        diary_text = analyze_photos_for_diary(
-            gemini_model,
-            photo_paths,
-            folder_name,
-            czech_date,
-        )
-        logger.info(f"  📝 Vygenerován text: {len(diary_text)} znaků")
+        logger.info(f"  🤖 Generuji AI zápis...")
+        diary_text = analyze_photos_for_diary(gemini_model, photo_paths, project_name, czech_date)
 
-        # ── Vytvoření záznamu v domeum.app ────────────────────────────────────
-        logger.info(f"  🏗️  Vytvářím záznam v domeum.app...")
-        success = await domeum.create_diary_entry(
-            text=diary_text,
-            date=date,
-            photo_paths=photo_paths,
-        )
+        logger.info(f"  📝 Vytvářím záznam v domeum.app...")
+        success = await domeum.create_diary_entry(text=diary_text, date=date, photo_paths=photo_paths)
 
         if success:
-            # Označit fotky a záznam jako zpracované
             for p in date_photos:
                 mark_photo_processed(state, folder_id, p["id"], date)
             mark_diary_entry(state, folder_id, date)
             entries_created += 1
             logger.info(f"  ✅ Záznam vytvořen: {czech_date}")
         else:
-            logger.error(f"  ❌ Vytvoření záznamu selhalo: {czech_date}")
+            logger.error(f"  ❌ Zápis selhal: {czech_date}")
 
-        # Pauza mezi záznamy (netlačit na server)
         await asyncio.sleep(3)
 
     return entries_created
 
 
-# ─────────────────────────────── Main ─────────────────────────────────────────
-
 async def main():
-    logger.info("═══════════════════════════════════════════════════════")
-    logger.info("🏗️  STAVEBNÍ DENÍK BOT – START")
-    logger.info(f"⏰ Čas: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("═══════════════════════════════════════════════════════════")
+    logger.info("🏗️  STAVEBNÍ DENÍK BOT – multi-project mode")
+    logger.info(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     if DRY_RUN:
-        logger.info("🔍 DRY RUN MODE – záznamy se nevytvářejí!")
-    logger.info("═══════════════════════════════════════════════════════")
+        logger.info("🔍 DRY RUN – záznamy se nevytvářejí!")
+    logger.info("═══════════════════════════════════════════════════════════")
 
-    # Stav (deduplikace)
     state = load_state()
     stats = get_stats(state)
-    logger.info(f"📊 Stav: {stats['total_photos_processed']} fotek zpracováno, "
-                f"{stats['total_diary_entries']} zápisů vytvořeno")
+    logger.info(f"📊 Stav: {stats['total_photos_processed']} fotek, {stats['total_diary_entries']} zápisů")
 
-    # Inicializace služeb
-    logger.info("\n🔧 Inicializace služeb...")
+    logger.info("\n🔧 Inicializace...")
     try:
         drive_service = get_drive_service()
         gemini_model  = init_gemini()
@@ -198,66 +173,76 @@ async def main():
         logger.critical(f"Inicializace selhala: {e}")
         sys.exit(1)
 
-    # Složky v Google Drive
-    logger.info(f"\n📂 Skenuji Google Drive: {MAIN_FOLDER_ID}")
-    subfolders = get_subfolders(drive_service, MAIN_FOLDER_ID)
+    logger.info(f"\n📂 Google Drive složky...")
+    drive_folders = get_subfolders(drive_service, MAIN_FOLDER_ID)
 
-    if not subfolders:
-        logger.warning(
-            "Nenalezeny žádné podsložky! Zkontrolujte:\n"
-            "  1. GOOGLE_DRIVE_FOLDER_ID\n"
-            "  2. Sdílení složky se service account emailem"
-        )
+    if not drive_folders:
+        logger.warning("Žádné složky na Google Drive! Zkontrolujte sdílení a FOLDER_ID.")
         sys.exit(0)
 
-    logger.info(f"Nalezeno {len(subfolders)} akce: {[f['name'] for f in subfolders]}")
+    logger.info(f"Drive složky: {[f['name'] for f in drive_folders]}")
 
-    # Celkový počet vytvořených zápisů
     total_entries = 0
 
     with tempfile.TemporaryDirectory() as temp_dir:
-        logger.info(f"\n🔐 Přihlašuji se na domeum.app jako {os.environ.get('DOMEUM_EMAIL')}")
-
         async with DomeumClient() as domeum:
+
+            logger.info(f"\n🔐 Přihlašuji se na domeum.app...")
             if not await domeum.login():
                 logger.critical("Přihlášení selhalo!")
                 sys.exit(1)
 
-            if not await domeum.select_project():
-                logger.critical(f"Projekt '{PROJECT_NAME}' nenalezen!")
-                sys.exit(1)
+            # Zjistit všechny projekty z domeum.app
+            logger.info("\n📋 Načítám projekty z domeum.app...")
+            domeum_projects = await domeum.get_all_projects()
 
-            if not await domeum.navigate_to_diary():
-                logger.critical("Stavební deník nenalezen!")
-                sys.exit(1)
+            if not domeum_projects:
+                # Fallback na DOMEUM_PROJECT_NAME pokud je nastaveno
+                project_name = os.environ.get("DOMEUM_PROJECT_NAME", "")
+                if project_name:
+                    logger.warning(f"Používám fallback projekt: {project_name}")
+                    domeum_projects = [{"name": project_name}]
+                else:
+                    logger.critical("Nelze zjistit projekty a DOMEUM_PROJECT_NAME není nastaveno.")
+                    sys.exit(1)
 
-            # Zpracovat každou složku (akci)
-            for folder in subfolders:
+            logger.info(f"Projekty v domeum: {[p['name'] for p in domeum_projects]}")
+
+            # Spárování s Drive složkami
+            logger.info("\n🔗 Páruji projekty s Google Drive složkami...")
+            pairs = match_projects_to_folders(domeum_projects, drive_folders)
+
+            if not pairs:
+                logger.warning(
+                    "Žádné párování!\n"
+                    f"  Projekty domeum: {[p['name'] for p in domeum_projects]}\n"
+                    f"  Složky Drive:    {[f['name'] for f in drive_folders]}\n"
+                    "  → Název složky na Drive musí být SHODNÝ s názvem projektu v domeum.app"
+                )
+                sys.exit(0)
+
+            logger.info(f"\n▶️  Zpracovávám {len(pairs)} projektů...")
+
+            for pair in pairs:
                 try:
-                    count = await process_folder(
-                        drive_service, gemini_model, domeum, folder, state, temp_dir
+                    count = await process_project_folder(
+                        drive_service, gemini_model, domeum,
+                        pair["project_name"], pair["folder_id"],
+                        state, temp_dir
                     )
                     total_entries += count
-
-                    # Průběžné ukládání stavu (bezpečnost)
                     save_state(state)
-
                 except KeyboardInterrupt:
-                    logger.warning("Přerušeno uživatelem")
                     break
                 except Exception as e:
-                    logger.error(f"Chyba při zpracování '{folder['name']}': {e}", exc_info=True)
-                    # Uložit stav i při chybě
+                    logger.error(f"Chyba projektu '{pair['project_name']}': {e}", exc_info=True)
                     save_state(state)
-                    continue
 
-    # Finální uložení
     save_state(state)
-
     logger.info("")
-    logger.info("═══════════════════════════════════════════════════════")
+    logger.info("═══════════════════════════════════════════════════════════")
     logger.info(f"✅ HOTOVO! Vytvořeno zápisů: {total_entries}")
-    logger.info("═══════════════════════════════════════════════════════")
+    logger.info("═══════════════════════════════════════════════════════════")
 
 
 if __name__ == "__main__":

@@ -102,11 +102,71 @@ class DomeumClient:
 
     # ─────────────────────────────── Projekt ──────────────────────────────────
 
+    async def get_all_projects(self) -> list[dict]:
+        """
+        Vrátí seznam všech projektů dostupných přihlášenému uživateli.
+        Každý projekt: {"name": "RD Cehovi", "element": locator}
+        """
+        logger.info("Načítám seznam všech projektů...")
+        try:
+            await self.page.wait_for_selector("text=Vaše projekty", timeout=10_000)
+            await self._wait_idle()
+
+            # Najdeme všechny projektové karty – hledáme podle struktury domeum.app
+            # Karty mají název projektu jako nadpis uvnitř
+            project_cards = self.page.locator(".project-card, [data-testid='project-card'], text=Vaše projekty ~ * h2, text=Vaše projekty ~ * h3")
+
+            # Fallback: vezmi všechny klikatelné karty na stránce po "Vaše projekty"
+            # Hledáme karty s textem – domeum.app zobrazuje název + adresu
+            all_texts = await self.page.locator("h2, h3, [class*='project'] [class*='name'], [class*='project'] [class*='title']").all_text_contents()
+
+            projects = []
+
+            # Spolehlivější přístup: projdeme všechny karty a zjistíme jejich texty
+            cards = self.page.locator("text=Vaše projekty + * >> *").all()
+
+            # Jednodušší: hledáme všechny klikatelné položky které obsahují název projektu
+            # a mají vedle sebe adresu (typický pattern domeum.app)
+            card_locators = await self.page.locator("[class*='card'], [class*='project-item'], [class*='ProjectCard']").all()
+
+            for card in card_locators:
+                try:
+                    text = await card.text_content()
+                    if text and len(text.strip()) > 2:
+                        name = text.strip().split("\n")[0].strip()
+                        if name:
+                            projects.append({"name": name, "locator": card})
+                except Exception:
+                    continue
+
+            # Pokud CSS třídy nefungují, zkusíme jiný přístup
+            if not projects:
+                logger.warning("CSS selector nenašel projekty, zkouším alternativní přístup")
+                await self._screenshot("projects_debug")
+                # Projdeme celou stránku a hledáme název + datum (typický pattern)
+                all_cards = await self.page.locator("div:has(> div > p)").all()
+                for card in all_cards:
+                    try:
+                        text = await card.text_content()
+                        if text and "\n" in text:
+                            name = text.strip().split("\n")[0].strip()
+                            if name and len(name) > 2 and "projekt" not in name.lower():
+                                projects.append({"name": name, "locator": card})
+                    except Exception:
+                        continue
+
+            logger.info(f"Nalezeno {len(projects)} projektů: {[p['name'] for p in projects]}")
+            return projects
+
+        except Exception as e:
+            logger.error(f"Chyba při načítání projektů: {e}")
+            await self._screenshot("projects_error")
+            return []
+
     async def select_project(self) -> bool:
-        """Vybere projekt dle DOMEUM_PROJECT_NAME."""
+        """Vybere projekt dle DOMEUM_PROJECT_NAME (fallback pro single-project mode)."""
         logger.info(f"Hledám projekt: {self.project_name}")
         try:
-            # Počkáme na seznam projektů
             await self.page.wait_for_selector("text=Vaše projekty", timeout=10_000)
             project_card = self.page.locator(f"text={self.project_name}").first
             await project_card.click()
@@ -116,6 +176,24 @@ class DomeumClient:
         except Exception as e:
             logger.error(f"Projekt nenalezen: {e}")
             await self._screenshot("project_error")
+            return False
+
+    async def select_project_by_name(self, project_name: str) -> bool:
+        """Vybere konkrétní projekt podle jména – používá se v multi-project módu."""
+        logger.info(f"Přepínám na projekt: {project_name}")
+        try:
+            # Nejdříve se vraťme na hlavní stránku projektů
+            await self.page.goto(f"https://domeum.app", wait_until="domcontentloaded")
+            await self._wait_idle()
+
+            project_card = self.page.locator(f"text={project_name}").first
+            await project_card.click()
+            await self._wait_idle()
+            logger.info(f"Projekt '{project_name}' vybrán")
+            return True
+        except Exception as e:
+            logger.error(f"Projekt '{project_name}' nenalezen: {e}")
+            await self._screenshot(f"project_{project_name}_error")
             return False
 
     # ─────────────────────────────── Stavební deník ───────────────────────────
