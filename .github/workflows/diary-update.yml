@@ -1,0 +1,62 @@
+name: 🏗️ Stavební deník – Automatický zápis
+
+on:
+  schedule:
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (pouze výpis, bez zápisu do domeum)'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  update-diary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🐍 Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: 🎭 Install Playwright Chromium
+        run: playwright install chromium --with-deps
+
+      - name: 🏗️ Run diary update
+        env:
+          DOMEUM_EMAIL:                ${{ secrets.DOMEUM_EMAIL }}
+          DOMEUM_PASSWORD:             ${{ secrets.DOMEUM_PASSWORD }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GEMINI_API_KEY:              ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_DRIVE_FOLDER_ID:      ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          DRY_RUN:                     ${{ github.event.inputs.dry_run || 'false' }}
+        run: python src/main.py
+
+      - name: 💾 Uložení stavu zpracovaných fotek
+        if: always()
+        run: |
+          git config --local user.email "diary-bot@github.com"
+          git config --local user.name "Stavební Deník Bot"
+          git add data/processed_photos.json
+          git diff --staged --quiet || git commit -m "🤖 Update stav [skip ci]"
+          git push || echo "Žádné změny"
+
+      - name: 📸 Debug screenshoty při chybě
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: /tmp/domeum_debug_*.png
+          retention-days: 7
