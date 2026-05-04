@@ -1,6 +1,6 @@
 """
-ai_analyzer.py – Google Gemini AI analýza fotek
-Pošle fotografie do Gemini 1.5 Flash a vygeneruje odborný zápis do stavebního deníku.
+ai_analyzer.py - Google Gemini AI analyza fotek
+Posle fotografie do Gemini 1.5 Flash a vygeneruje odborny zapis do stavebniho deniku.
 """
 
 import logging
@@ -14,72 +14,63 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# Maximální počet fotek v jednom Gemini požadavku
 MAX_PHOTOS_PER_REQUEST = 10
-
-# Počet opakování při chybě Gemini API
 MAX_RETRIES = 3
-RETRY_DELAY = 10  # sekund
+RETRY_DELAY = 10
 
 
 def init_gemini():
     """Inicializuje Gemini API klienta."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        raise ValueError("Chybí environment variable GEMINI_API_KEY")
-
+        raise ValueError("Chybi environment variable GEMINI_API_KEY")
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-1.5-flash")
-    logger.info("Gemini 1.5 Flash inicializován")
+    logger.info("Gemini 1.5 Flash inicializovan")
     return model
 
 
 def _build_prompt(action_name: str, date: str, photo_count: int) -> str:
-    """Sestaví prompt pro Gemini."""
-    return f"""Jsi odborný asistent pro vedení stavebního deníku. Pracuješ na stavbě rodinného domu v České republice.
-
-Analyzuj přiložené fotografie a vytvoř **profesionální zápis do stavebního deníku** dle českých stavebních norem a zvyklostí.
-
-═══════════════════════════════════════
-Název akce / prováděné práce: {action_name}
-Datum: {date}
-Počet fotografií: {photo_count}
-═══════════════════════════════════════
-
-**Struktura zápisu (použij přesně toto pořadí):**
-
-1. **Popis prováděných prací:**
-   Věcný popis co se provádělo, v jaké etapě, na které části stavby.
-
-2. **Pracovníci na stavbě:**
-   Počet a případně profese viditelných pracovníků. Pokud nejsou viditelní, napiš "Dle prezenční listiny".
-
-3. **Nasazené stroje a mechanizace:**
-   Konkrétní stroje, nářadí, mechanizmy. Pokud nejsou viditelné, napiš "Ruční práce, bez mechanizace" nebo vynech.
-
-4. **Použité materiály:**
-   Identifikované materiály, výrobky, prvky. Pokud není možné identifikovat, napiš "Dle dodacích listů".
-
-5. **Klimatické podmínky:**
-   Pokud jsou patrné z fotek (světlo, stíny, sníh, déšť), jinak: "Dle záznamu – doplňte ručně".
-
-6. **Bezpečnost práce:**
-   Viditelné OOPP (helmy, vesty, rukavice), zabezpečení staveniště. Pokud není patrné: "Dle plánu BOZP".
-
-7. **Postup a stav prací:**
-   Jak pokročily práce, co bylo dokončeno, co zbývá.
-
----
-⚠️ *Automaticky vygenerováno AI na základě fotografií ze dne {date}. Před schválením zápisu prosím zkontrolujte a doplňte: přesný počet pracovníků, dodané materiály s množstvím a dodacími listy, klimatické podmínky, případné mimořádné události.*
-
----
-
-**Pokyny pro styl:**
-- Piš v minulém čase, věcně a stručně
-- Používej odbornou stavební terminologii  
-- Nepište "Na fotografiích vidím..." – piš přímo jako záznamy do deníku
-- Zápis by měl mít 150–400 slov
-- Piš výhradně česky"""
+    """Sestavi prompt pro Gemini."""
+    return (
+        "Jsi odborny asistent pro vedeni stavebniho deniku. "
+        "Pracujes na stavbe rodinneho domu v Ceske republice.\n\n"
+        "Analyzuj prilozene fotografie a vytvor profesionalni zapis "
+        "do stavebniho deniku dle ceskych stavebnich norem a zvyklosti.\n\n"
+        f"Nazev akce: {action_name}\n"
+        f"Datum: {date}\n"
+        f"Pocet fotografii: {photo_count}\n\n"
+        "Struktura zapisu (pouzij presne toto poradi):\n\n"
+        "1. Popis provadenych praci:\n"
+        "   Vecny popis co se provadelo, v jake etape, na ktere casti stavby.\n\n"
+        "2. Pracovnici na stavbe:\n"
+        "   Pocet a pripadne profese viditelnych pracovniku. "
+        "Pokud nejsou viditelni, napis: Dle prezencni listiny.\n\n"
+        "3. Nasazene stroje a mechanizace:\n"
+        "   Konkretni stroje, naradi, mechanizmy. "
+        "Pokud nejsou viditelne, napis: Rucni prace, bez mechanizace.\n\n"
+        "4. Pouzite materialy:\n"
+        "   Identifikovane materialy, vyrobky, prvky. "
+        "Pokud neni mozne identifikovat, napis: Dle dodacich listu.\n\n"
+        "5. Klimaticke podminky:\n"
+        "   Pokud jsou patne z fotek, jinak napis: Dle zaznamu - doplnte rucne.\n\n"
+        "6. Bezpecnost prace:\n"
+        "   Viditelne OOPP (helmy, vesty, rukavice), zabezpeceni stavenis te. "
+        "Pokud neni patne: Dle planu BOZP.\n\n"
+        "7. Postup a stav praci:\n"
+        "   Jak pokrocily prace, co bylo dokonceno, co zbyvá.\n\n"
+        "---\n"
+        f"POZNAMKA: Automaticky vygenerovano AI na zaklade fotografii ze dne {date}. "
+        "Pred schvalenim zapisu prosim zkontrolujte a doplnte: "
+        "presny pocet pracovniku, dodane materialy s mnozstvim a dodacimi listy, "
+        "klimaticke podminky, pripadne mimoradne udalosti.\n\n"
+        "Pokyny pro styl:\n"
+        "- Pis v minulem case, vecne a strucne\n"
+        "- Pouzivej odbornou stavebni terminologii\n"
+        "- Nepis 'Na fotografiich vidim...' - pis primo jako zaznamy do deniku\n"
+        "- Zapis by mel mit 150-400 slov\n"
+        "- Pis vyhradne cesky (s diakritikou)"
+    )
 
 
 def analyze_photos_for_diary(
@@ -89,61 +80,52 @@ def analyze_photos_for_diary(
     date: str
 ) -> str:
     """
-    Analyzuje fotky a vygeneruje zápis do stavebního deníku.
-    Pokud je fotek více než MAX_PHOTOS_PER_REQUEST, zpracuje je po skupinách.
+    Analyzuje fotky a vygeneruje zapis do stavebniho deniku.
+    Pokud je fotek vice nez MAX_PHOTOS_PER_REQUEST, zpracuje je po skupinach.
     """
     if not photo_paths:
-        logger.warning("Žádné fotky k analýze")
-        return _fallback_entry(action_name, date, "Žádné fotky k dispozici")
+        logger.warning("Zadne fotky k analyze")
+        return _fallback_entry(action_name, date, "Zadne fotky k dispozici")
 
-    # Načtení fotek
     loaded_images = []
     for path in photo_paths:
         try:
             img = Image.open(path)
-            # Zmenšení pro API (max 1920px na delší straně)
             img.thumbnail((1920, 1920), Image.LANCZOS)
             loaded_images.append(img)
         except Exception as e:
-            logger.warning(f"Nelze načíst obrázek {path}: {e}")
+            logger.warning(f"Nelze nacist obrazek {path}: {e}")
 
     if not loaded_images:
-        return _fallback_entry(action_name, date, "Fotky se nepodařilo načíst")
+        return _fallback_entry(action_name, date, "Fotky se nepodarilo nacist")
 
-    # Zpracování po skupinách
     if len(loaded_images) > MAX_PHOTOS_PER_REQUEST:
-        logger.info(f"Dělím {len(loaded_images)} fotek do skupin po {MAX_PHOTOS_PER_REQUEST}")
+        logger.info(f"Delim {len(loaded_images)} fotek do skupin po {MAX_PHOTOS_PER_REQUEST}")
         groups = [
             loaded_images[i:i + MAX_PHOTOS_PER_REQUEST]
             for i in range(0, len(loaded_images), MAX_PHOTOS_PER_REQUEST)
         ]
-        partial_texts = []
         for i, group in enumerate(groups):
-            logger.info(f"Zpracovávám skupinu {i+1}/{len(groups)} ({len(group)} fotek)")
+            logger.info(f"Zpracovavam skupinu {i+1}/{len(groups)}")
             text = _call_gemini(model, group, action_name, date, len(loaded_images))
             if text:
-                partial_texts.append(text)
-            time.sleep(2)  # Rate limiting
-
-        if partial_texts:
-            # Pokud máme více částí, vezmi první kompletní zápis
-            return partial_texts[0]
-        return _fallback_entry(action_name, date, "Analýza selhala")
+                return text
+            time.sleep(2)
+        return _fallback_entry(action_name, date, "Analyza selhala")
     else:
         return _call_gemini(model, loaded_images, action_name, date, len(loaded_images))
 
 
 def _call_gemini(model, images: List, action_name: str, date: str, total_photos: int) -> str:
-    """Volání Gemini API s retry logikou."""
+    """Volani Gemini API s retry logikou."""
     prompt = _build_prompt(action_name, date, total_photos)
 
     for attempt in range(MAX_RETRIES):
         try:
             response = model.generate_content([prompt] + images)
             text = response.text.strip()
-            logger.info(f"Gemini vygeneroval zápis ({len(text)} znaků)")
+            logger.info(f"Gemini vygeneroval zapis ({len(text)} znaku)")
             return text
-
         except Exception as e:
             logger.warning(f"Gemini chyba (pokus {attempt+1}/{MAX_RETRIES}): {e}")
             if attempt < MAX_RETRIES - 1:
@@ -153,13 +135,13 @@ def _call_gemini(model, images: List, action_name: str, date: str, total_photos:
 
 
 def _fallback_entry(action_name: str, date: str, reason: str) -> str:
-    """Nouzový zápis když AI selže."""
+    """Nouzovy zapis kdyz AI selze."""
     return (
-        f"**Automatický zápis – {action_name}**\n\n"
+        f"Automaticky zapis - {action_name}\n\n"
         f"Datum: {date}\n\n"
-        f"Na stavbě probíhaly práce v rámci akce „{action_name}". "
-        f"Automatická analýza fotografií nebyla dostupná ({reason}). "
-        f"Fotografie jsou přiloženy k záznamu.\n\n"
-        f"⚠️ *Tento zápis vyžaduje ruční doplnění: popis prací, pracovníci, "
-        f"materiály, klimatické podmínky, bezpečnost práce.*"
+        f"Na stavbe probihaly prace v ramci akce {action_name}. "
+        f"Automaticka analyza fotografii nebyla dostupna ({reason}). "
+        f"Fotografie jsou prilozeny k zaznamu.\n\n"
+        f"Tento zapis vyzaduje rucni doplneni: popis praci, pracovnici, "
+        f"materialy, klimaticke podminky, bezpecnost prace."
     )
