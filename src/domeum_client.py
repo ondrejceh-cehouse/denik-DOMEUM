@@ -160,8 +160,8 @@ class DomeumClient:
             card_headings = [h.strip() for h in headings if h.strip() and len(h.strip()) > 2]
             logger.info(f"Nalezené nadpisy na stránce: {card_headings}")
 
-            # Použijeme nadpisy jako názvy projektů (přeskočíme "Your Projects" / "Vaše projekty")
-            skip = {"your projects", "vaše projekty", "create project", "vytvořit projekt"}
+            # Použijeme nadpisy jako názvy projektů (přeskočíme systémové texty)
+            skip = {"your projects", "vaše projekty", "create project", "vytvořit projekt", "cookie consent"}
             for name in card_headings:
                 if name.lower() not in skip:
                     projects.append({"name": name})
@@ -198,6 +198,11 @@ class DomeumClient:
             # Nejdříve se vraťme na hlavní stránku projektů
             await self.page.goto(f"https://domeum.app", wait_until="domcontentloaded")
             await self._wait_idle()
+
+            # Počkat na načtení karet projektů
+            await self.page.locator("text=Your Projects").or_(
+                self.page.locator("text=Vaše projekty")
+            ).first.wait_for(timeout=15_000)
 
             project_card = self.page.locator(f"text={project_name}").first
             await project_card.click()
