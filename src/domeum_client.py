@@ -237,8 +237,13 @@ class DomeumClient:
     async def navigate_to_diary(self) -> bool:
         """Přejde do sekce Stavební deník."""
         logger.info("Přecházím na Stavební deník")
+        await self.page.wait_for_timeout(3_000)
         await self._screenshot("diary_nav_start")
         try:
+            # Vypsat všechny viditelné texty pro debug
+            all_text = await self.page.locator("nav a, aside a, [role='navigation'] a, li a").all_text_contents()
+            logger.info(f"Viditelné menu položky: {all_text}")
+
             diary_link = (
                 self.page.locator("text=Stavební deník")
                 .or_(self.page.locator("text=Construction Diary"))
