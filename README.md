@@ -90,7 +90,7 @@ data/processed_photos.json (paměť bota – co již bylo zpracováno)
 1. Přihlaste se na [domeum.app](https://domeum.app) jako **Ondrej Ceh**
 2. Otevřete projekt **RD Cehovi**
 3. V levém menu: **Členové** → **Přidat člena**
-4. Zadejte: `ai.klient@cehouse.cz`
+4. Zadejte: `ai.asistent@cehouse.cz`
 5. Role: **Editor** (musí moci vytvářet záznamy)
 
 > ⚠️ Ujistěte se, že `ai.klient@cehouse.cz` může přijmout pozvánku a přihlásit se.
@@ -111,7 +111,7 @@ https://drive.google.com/drive/folders/1fOX2D-kf_9Kj3ZFgE_ICKfT1jmn0Jl4K
 
 | Secret | Hodnota |
 |--------|---------|
-| `DOMEUM_EMAIL` | `ai.klient@cehouse.cz` |
+| `DOMEUM_EMAIL` | `ai.asistent@cehouse.cz` |
 | `DOMEUM_PASSWORD` | *(heslo k ai.klient účtu)* |
 | `DOMEUM_PROJECT_NAME` | `RD Cehovi` |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | *(celý obsah staženeho JSON souboru)* |

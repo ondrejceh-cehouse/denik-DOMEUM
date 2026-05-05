@@ -55,7 +55,7 @@ def get_drive_service():
 
 
 def get_subfolders(service, parent_folder_id: str) -> List[Dict]:
-    """Vrátí seznam podsložek v dané složce."""
+    """Vrátí seznam podsložek v dané složce (podporuje Sdílené disky)."""
     query = (
         f"'{parent_folder_id}' in parents "
         f"and mimeType='application/vnd.google-apps.folder' "
@@ -65,7 +65,9 @@ def get_subfolders(service, parent_folder_id: str) -> List[Dict]:
         q=query,
         fields="files(id, name)",
         pageSize=100,
-        orderBy="name"
+        orderBy="name",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
 
     folders = results.get("files", [])
@@ -74,7 +76,7 @@ def get_subfolders(service, parent_folder_id: str) -> List[Dict]:
 
 
 def get_photos_in_folder(service, folder_id: str) -> List[Dict]:
-    """Vrátí seznam fotek v dané složce (bez rekurze do podsložek)."""
+    """Vrátí seznam fotek v dané složce (podporuje Sdílené disky)."""
     mime_filter = " or ".join([f"mimeType='{m}'" for m in IMAGE_MIME_TYPES])
     query = f"'{folder_id}' in parents and ({mime_filter}) and trashed=false"
 
@@ -87,6 +89,8 @@ def get_photos_in_folder(service, folder_id: str) -> List[Dict]:
             "fields": "nextPageToken, files(id, name, createdTime, modifiedTime, mimeType, size)",
             "pageSize": 1000,
             "orderBy": "createdTime",
+            "supportsAllDrives": True,
+            "includeItemsFromAllDrives": True,
         }
         if page_token:
             params["pageToken"] = page_token
@@ -114,9 +118,9 @@ def download_photo(service, file_id: str, mime_type: str, dest_path: str) -> str
             request = service.files().export_media(fileId=file_id, mimeType="image/jpeg")
             dest_path = str(Path(dest_path).with_suffix(".jpg"))
         except Exception:
-            request = service.files().get_media(fileId=file_id)
+            request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     else:
-        request = service.files().get_media(fileId=file_id)
+        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
 
     Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
 
