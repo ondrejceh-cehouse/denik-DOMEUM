@@ -86,26 +86,21 @@ class DomeumClient:
         """Přihlásí se na domeum.app."""
         logger.info(f"Přihlašuji se jako {self.email}")
 
-        # Zkusíme přímou login URL i homepage
-        for url in [f"{DOMEUM_URL}/login", f"{DOMEUM_URL}/sign-in", DOMEUM_URL]:
-            await self.page.goto(url, wait_until="domcontentloaded")
-            await self.page.wait_for_timeout(3_000)
-            await self._screenshot(f"login_page_{url.split('/')[-1] or 'home'}")
-
-            # Pokud stránka obsahuje email input přímo, jsme na správné URL
-            if await self.page.locator('input[type="email"], input[name="email"], input[autocomplete="email"]').count() > 0:
-                logger.info(f"Login formulář nalezen na: {url}")
-                break
-        else:
-            # Žádná URL neobsahovala formulář – zkusíme kliknout na přihlašovací tlačítko
-            await self.page.goto(DOMEUM_URL, wait_until="domcontentloaded")
-            await self.page.wait_for_timeout(2_000)
-
-        await self._screenshot("login_before_click")
+        await self.page.goto(DOMEUM_URL, wait_until="domcontentloaded")
+        await self.page.wait_for_timeout(2_000)
+        await self._screenshot("login_homepage")
 
         try:
-            # Krok 1: kliknout na "Přihlásit se pomocí e-mailu" pokud existuje
-            for text in ["Přihlásit se pomocí e-mailu", "E-mail", "Email", "Pokračovat e-mailem"]:
+            # Krok 1: kliknout na "Sign In" na homepage
+            signin_btn = self.page.locator('a:has-text("Sign In"), button:has-text("Sign In"), a:has-text("Přihlásit"), button:has-text("Přihlásit")').first
+            if await signin_btn.count() > 0:
+                await signin_btn.click()
+                await self.page.wait_for_timeout(2_000)
+                logger.info("Kliknuto na 'Sign In'")
+            await self._screenshot("login_after_signin_click")
+
+            # Krok 2: kliknout na "Přihlásit se pomocí e-mailu" pokud existuje
+            for text in ["Přihlásit se pomocí e-mailu", "E-mail", "Email", "Pokračovat e-mailem", "Continue with Email"]:
                 btn = self.page.locator(f'button:has-text("{text}"), a:has-text("{text}")').first
                 if await btn.count() > 0:
                     await btn.click()
