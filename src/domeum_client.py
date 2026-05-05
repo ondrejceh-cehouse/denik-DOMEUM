@@ -145,7 +145,10 @@ class DomeumClient:
         logger.info("Načítám seznam všech projektů...")
         try:
             # Čekat na stránku projektů (anglická i česká verze)
-            await self.page.locator("text=Your Projects, text=Vaše projekty").first.wait_for(timeout=15_000)
+            projects_heading = self.page.locator("text=Your Projects").or_(
+                self.page.locator("text=Vaše projekty")
+            )
+            await projects_heading.first.wait_for(timeout=15_000)
             await self._wait_idle()
             await self._screenshot("projects_page")
 
@@ -175,7 +178,9 @@ class DomeumClient:
         """Vybere projekt dle DOMEUM_PROJECT_NAME (fallback pro single-project mode)."""
         logger.info(f"Hledám projekt: {self.project_name}")
         try:
-            await self.page.locator("text=Your Projects, text=Vaše projekty").first.wait_for(timeout=10_000)
+            await self.page.locator("text=Your Projects").or_(
+                self.page.locator("text=Vaše projekty")
+            ).first.wait_for(timeout=10_000)
             project_card = self.page.locator(f"text={self.project_name}").first
             await project_card.click()
             await self._wait_idle()
