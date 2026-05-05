@@ -240,21 +240,58 @@ class DomeumClient:
         await self.page.wait_for_timeout(3_000)
         await self._screenshot("diary_nav_start")
         try:
-            # Vypsat všechny viditelné texty pro debug
-            all_text = await self.page.locator("nav a, aside a, [role='navigation'] a, li a").all_text_contents()
-            logger.info(f"Viditelné menu položky: {all_text}")
+            # Logovat všechny linky pro debug
+            all_links = await self.page.locator("a").all()
+            link_texts = []
+            link_hrefs = []
+            for link in all_links[:30]:
+                try:
+                    t = (await link.text_content() or "").strip()
+                    h = await link.get_attribute("href") or ""
+                    if t or h:
+                        link_texts.append(t)
+                        link_hrefs.append(h)
+                except Exception:
+                    pass
+            logger.info(f"Všechny linky – texty: {link_texts}")
+            logger.info(f"Všechny linky – href: {link_hrefs}")
 
-            diary_link = (
-                self.page.locator("text=Stavební deník")
-                .or_(self.page.locator("text=Construction Diary"))
-                .or_(self.page.locator("text=Site Diary"))
-                .or_(self.page.locator("text=Diary"))
-            ).first
-            await diary_link.click()
-            await self._wait_idle()
-            await self._screenshot("diary_nav_after_click")
-            logger.info("Stavební deník nalezen")
-            return True
+            # Klíčová slova pro stavební deník (česky i anglicky)
+            diary_keywords = ["stavební deník", "construction diary", "site diary", "diary", "deník", "denik"]
+
+            # Hledáme odkaz podle textu
+            for link_el, text, href in zip(all_links[:30], link_texts, link_hrefs):
+                t_low = text.lower()
+                h_low = href.lower()
+                if any(kw in t_low or kw in h_low for kw in diary_keywords):
+                    logger.info(f"Nalezen deník link: text='{text}' href='{href}'")
+                    await link_el.click()
+                    await self._wait_idle()
+                    await self._screenshot("diary_nav_after_click")
+                    logger.info("Stavební deník nalezen")
+                    return True
+
+            # Fallback: zkusit URL manipulaci
+            current_url = self.page.url
+            logger.info(f"Aktuální URL: {current_url}")
+            for suffix in ["/diary", "/construction-diary", "/stavebni-denik", "/denik"]:
+                base = current_url.rstrip("/")
+                # Zkusit připojit suffix k base URL projektu
+                if "/account" in base:
+                    parts = base.split("/")
+                    # Najít index projektu a sestavit URL
+                    diary_url = base + suffix
+                    await self.page.goto(diary_url, wait_until="domcontentloaded")
+                    await self.page.wait_for_timeout(2_000)
+                    if "diary" in self.page.url.lower() or "denik" in self.page.url.lower():
+                        await self._screenshot("diary_nav_url_success")
+                        logger.info(f"Deník nalezen přes URL: {self.page.url}")
+                        return True
+                    break
+
+            await self._screenshot("diary_nav_error")
+            raise RuntimeError("Deník nenalezen – zkontrolujte screenshoty")
+
         except Exception as e:
             logger.error(f"Nelze přejít na Stavební deník: {e}")
             await self._screenshot("diary_nav_error")
