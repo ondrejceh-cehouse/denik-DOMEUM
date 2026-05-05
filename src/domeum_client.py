@@ -87,12 +87,36 @@ class DomeumClient:
         logger.info(f"Přihlašuji se jako {self.email}")
         await self.page.goto(DOMEUM_URL, wait_until="domcontentloaded")
         await self._wait_idle()
+        await self._screenshot("login_start")
 
         try:
+            # Krok 1: kliknout na "Přihlásit se pomocí e-mailu" aby se zobrazil formulář
+            email_btn = self.page.locator('button:has-text("Přihlásit se pomocí e-mailu"), a:has-text("Přihlásit se pomocí e-mailu")').first
+            if await email_btn.count() > 0:
+                await email_btn.click()
+                await self.page.wait_for_timeout(1_500)
+                logger.info("Kliknuto na 'Přihlásit se pomocí e-mailu'")
+
+            # Krok 2: počkat na zobrazení formuláře a vyplnit
+            await self.page.wait_for_selector('input[type="email"]', timeout=15_000)
             await self.page.fill('input[type="email"]', self.email)
             await self.page.fill('input[type="password"]', self.password)
-            await self.page.click('button:has-text("Přihlásit se pomocí e-mailu")')
+
+            # Krok 3: odeslat formulář
+            submit_selectors = [
+                'button[type="submit"]',
+                'button:has-text("Přihlásit")',
+                'button:has-text("Pokračovat")',
+                'button:has-text("Sign in")',
+            ]
+            for sel in submit_selectors:
+                btn = self.page.locator(sel).first
+                if await btn.count() > 0:
+                    await btn.click()
+                    break
+
             await self._wait_idle()
+            await self._screenshot("login_done")
             logger.info("Přihlášení úspěšné")
             return True
         except Exception as e:
