@@ -195,14 +195,32 @@ class DomeumClient:
         """Vybere konkrétní projekt podle jména – používá se v multi-project módu."""
         logger.info(f"Přepínám na projekt: {project_name}")
         try:
-            # Nejdříve se vraťme na hlavní stránku projektů
-            await self.page.goto(f"https://domeum.app", wait_until="domcontentloaded")
-            await self._wait_idle()
-
-            # Počkat na načtení karet projektů
-            await self.page.locator("text=Your Projects").or_(
+            # Pokud už jsme na stránce projektů, přeskočit navigaci
+            projects_locator = self.page.locator("text=Your Projects").or_(
                 self.page.locator("text=Vaše projekty")
-            ).first.wait_for(timeout=15_000)
+            )
+            if await projects_locator.count() == 0:
+                # Zkusíme sidebar home button (ikona domečku)
+                home_btn = self.page.locator('a[href="/account/personal"], a[href="/"], [aria-label*="home" i], [aria-label*="Home"]').first
+                if await home_btn.count() > 0:
+                    await home_btn.click()
+                    await self._wait_idle()
+                else:
+                    # Fallback: zkusit různé URL dokud nenajdeme projekty
+                    for url in [
+                        "https://domeum.app/account/personal",
+                        "https://domeum.app/account",
+                        "https://domeum.app/projects",
+                        "https://domeum.app",
+                    ]:
+                        await self.page.goto(url, wait_until="domcontentloaded")
+                        await self._wait_idle()
+                        if await projects_locator.count() > 0:
+                            logger.info(f"Projekty nalezeny na: {url}")
+                            break
+
+            await self._screenshot(f"before_project_click_{project_name[:10]}")
+            await projects_locator.first.wait_for(timeout=10_000)
 
             project_card = self.page.locator(f"text={project_name}").first
             await project_card.click()
