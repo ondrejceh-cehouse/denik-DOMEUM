@@ -99,70 +99,30 @@ class DomeumClient:
                 logger.info("Kliknuto na 'Sign In'")
             await self._screenshot("login_after_signin_click")
 
-            # Krok 2: kliknout na "Přihlásit se pomocí e-mailu" pokud existuje
-            for text in ["Přihlásit se pomocí e-mailu", "E-mail", "Email", "Pokračovat e-mailem", "Continue with Email"]:
-                btn = self.page.locator(f'button:has-text("{text}"), a:has-text("{text}")').first
-                if await btn.count() > 0:
-                    await btn.click()
-                    await self.page.wait_for_timeout(2_000)
-                    logger.info(f"Kliknuto: '{text}'")
-                    break
+            # Krok 2: počkat na login formulář a vyplnit email + heslo
+            await self.page.wait_for_selector('input[type="email"], input[name="email"]', timeout=10_000)
 
-            await self._screenshot("login_after_method_click")
+            email_input = self.page.locator('input[type="email"], input[name="email"]').first
+            await email_input.fill(self.email)
+            logger.info("Email vyplněn")
 
-            # Krok 2: vyplnit email (Firebase může mít email a heslo na oddělených krocích)
-            email_selectors = [
-                'input[type="email"]',
-                'input[name="email"]',
-                'input[autocomplete="email"]',
-                'input[placeholder*="mail"]',
-                'input[placeholder*="Mail"]',
-            ]
-            email_filled = False
-            for sel in email_selectors:
-                el = self.page.locator(sel).first
-                if await el.count() > 0:
-                    await el.fill(self.email)
-                    email_filled = True
-                    logger.info(f"Email vyplněn ({sel})")
-                    break
+            pwd_input = self.page.locator('input[type="password"], input[name="password"]').first
+            if await pwd_input.count() > 0:
+                await pwd_input.fill(self.password)
+                logger.info("Heslo vyplněno")
 
-            if not email_filled:
-                raise RuntimeError("Email input nenalezen")
+            await self._screenshot("login_after_fill")
 
-            # Krok 3: submit emailu (Firebase dvoustupňový flow – nejdřív email, pak heslo)
-            for sel in ['button[type="submit"]', 'button:has-text("Další")', 'button:has-text("Pokračovat")', 'button:has-text("Next")']:
+            # Krok 3: odeslat formulář tlačítkem "Sign in with Email"
+            for sel in [
+                'button:has-text("Sign in with Email")',
+                'button:has-text("Přihlásit se pomocí e-mailu")',
+                'button[type="submit"]',
+            ]:
                 btn = self.page.locator(sel).first
                 if await btn.count() > 0:
                     await btn.click()
-                    await self.page.wait_for_timeout(2_000)
-                    break
-
-            await self._screenshot("login_after_email")
-
-            # Krok 4: vyplnit heslo (buď bylo na stejné stránce, nebo se teprve zobrazilo)
-            pwd_selectors = [
-                'input[type="password"]',
-                'input[name="password"]',
-                'input[autocomplete="current-password"]',
-            ]
-            pwd_filled = False
-            for sel in pwd_selectors:
-                el = self.page.locator(sel).first
-                if await el.count() > 0:
-                    await el.fill(self.password)
-                    pwd_filled = True
-                    logger.info(f"Heslo vyplněno ({sel})")
-                    break
-
-            if not pwd_filled:
-                raise RuntimeError("Password input nenalezen")
-
-            # Krok 5: finální submit
-            for sel in ['button[type="submit"]', 'button:has-text("Přihlásit")', 'button:has-text("Sign in")', 'button:has-text("Přihlásit se")']:
-                btn = self.page.locator(sel).first
-                if await btn.count() > 0:
-                    await btn.click()
+                    logger.info(f"Submit: {sel}")
                     break
 
             await self._wait_idle()
@@ -184,51 +144,24 @@ class DomeumClient:
         """
         logger.info("Načítám seznam všech projektů...")
         try:
-            await self.page.wait_for_selector("text=Vaše projekty", timeout=10_000)
+            # Čekat na stránku projektů (anglická i česká verze)
+            await self.page.locator("text=Your Projects, text=Vaše projekty").first.wait_for(timeout=15_000)
             await self._wait_idle()
-
-            # Najdeme všechny projektové karty – hledáme podle struktury domeum.app
-            # Karty mají název projektu jako nadpis uvnitř
-            project_cards = self.page.locator(".project-card, [data-testid='project-card'], text=Vaše projekty ~ * h2, text=Vaše projekty ~ * h3")
-
-            # Fallback: vezmi všechny klikatelné karty na stránce po "Vaše projekty"
-            # Hledáme karty s textem – domeum.app zobrazuje název + adresu
-            all_texts = await self.page.locator("h2, h3, [class*='project'] [class*='name'], [class*='project'] [class*='title']").all_text_contents()
+            await self._screenshot("projects_page")
 
             projects = []
 
-            # Spolehlivější přístup: projdeme všechny karty a zjistíme jejich texty
-            cards = self.page.locator("text=Vaše projekty + * >> *").all()
+            # Stránka zobrazuje karty projektů – každá karta má nadpis s názvem projektu
+            # Hledáme heading elementy uvnitř klikatelných karet
+            headings = await self.page.locator("h2, h3, h4").all_text_contents()
+            card_headings = [h.strip() for h in headings if h.strip() and len(h.strip()) > 2]
+            logger.info(f"Nalezené nadpisy na stránce: {card_headings}")
 
-            # Jednodušší: hledáme všechny klikatelné položky které obsahují název projektu
-            # a mají vedle sebe adresu (typický pattern domeum.app)
-            card_locators = await self.page.locator("[class*='card'], [class*='project-item'], [class*='ProjectCard']").all()
-
-            for card in card_locators:
-                try:
-                    text = await card.text_content()
-                    if text and len(text.strip()) > 2:
-                        name = text.strip().split("\n")[0].strip()
-                        if name:
-                            projects.append({"name": name, "locator": card})
-                except Exception:
-                    continue
-
-            # Pokud CSS třídy nefungují, zkusíme jiný přístup
-            if not projects:
-                logger.warning("CSS selector nenašel projekty, zkouším alternativní přístup")
-                await self._screenshot("projects_debug")
-                # Projdeme celou stránku a hledáme název + datum (typický pattern)
-                all_cards = await self.page.locator("div:has(> div > p)").all()
-                for card in all_cards:
-                    try:
-                        text = await card.text_content()
-                        if text and "\n" in text:
-                            name = text.strip().split("\n")[0].strip()
-                            if name and len(name) > 2 and "projekt" not in name.lower():
-                                projects.append({"name": name, "locator": card})
-                    except Exception:
-                        continue
+            # Použijeme nadpisy jako názvy projektů (přeskočíme "Your Projects" / "Vaše projekty")
+            skip = {"your projects", "vaše projekty", "create project", "vytvořit projekt"}
+            for name in card_headings:
+                if name.lower() not in skip:
+                    projects.append({"name": name})
 
             logger.info(f"Nalezeno {len(projects)} projektů: {[p['name'] for p in projects]}")
             return projects
@@ -242,7 +175,7 @@ class DomeumClient:
         """Vybere projekt dle DOMEUM_PROJECT_NAME (fallback pro single-project mode)."""
         logger.info(f"Hledám projekt: {self.project_name}")
         try:
-            await self.page.wait_for_selector("text=Vaše projekty", timeout=10_000)
+            await self.page.locator("text=Your Projects, text=Vaše projekty").first.wait_for(timeout=10_000)
             project_card = self.page.locator(f"text={self.project_name}").first
             await project_card.click()
             await self._wait_idle()
