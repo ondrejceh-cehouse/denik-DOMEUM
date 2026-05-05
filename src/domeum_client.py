@@ -85,31 +85,86 @@ class DomeumClient:
     async def login(self) -> bool:
         """Přihlásí se na domeum.app."""
         logger.info(f"Přihlašuji se jako {self.email}")
-        await self.page.goto(DOMEUM_URL, wait_until="domcontentloaded")
-        await self._wait_idle()
-        await self._screenshot("login_start")
+
+        # Zkusíme přímou login URL i homepage
+        for url in [f"{DOMEUM_URL}/login", f"{DOMEUM_URL}/sign-in", DOMEUM_URL]:
+            await self.page.goto(url, wait_until="domcontentloaded")
+            await self.page.wait_for_timeout(3_000)
+            await self._screenshot(f"login_page_{url.split('/')[-1] or 'home'}")
+
+            # Pokud stránka obsahuje email input přímo, jsme na správné URL
+            if await self.page.locator('input[type="email"], input[name="email"], input[autocomplete="email"]').count() > 0:
+                logger.info(f"Login formulář nalezen na: {url}")
+                break
+        else:
+            # Žádná URL neobsahovala formulář – zkusíme kliknout na přihlašovací tlačítko
+            await self.page.goto(DOMEUM_URL, wait_until="domcontentloaded")
+            await self.page.wait_for_timeout(2_000)
+
+        await self._screenshot("login_before_click")
 
         try:
-            # Krok 1: kliknout na "Přihlásit se pomocí e-mailu" aby se zobrazil formulář
-            email_btn = self.page.locator('button:has-text("Přihlásit se pomocí e-mailu"), a:has-text("Přihlásit se pomocí e-mailu")').first
-            if await email_btn.count() > 0:
-                await email_btn.click()
-                await self.page.wait_for_timeout(1_500)
-                logger.info("Kliknuto na 'Přihlásit se pomocí e-mailu'")
+            # Krok 1: kliknout na "Přihlásit se pomocí e-mailu" pokud existuje
+            for text in ["Přihlásit se pomocí e-mailu", "E-mail", "Email", "Pokračovat e-mailem"]:
+                btn = self.page.locator(f'button:has-text("{text}"), a:has-text("{text}")').first
+                if await btn.count() > 0:
+                    await btn.click()
+                    await self.page.wait_for_timeout(2_000)
+                    logger.info(f"Kliknuto: '{text}'")
+                    break
 
-            # Krok 2: počkat na zobrazení formuláře a vyplnit
-            await self.page.wait_for_selector('input[type="email"]', timeout=15_000)
-            await self.page.fill('input[type="email"]', self.email)
-            await self.page.fill('input[type="password"]', self.password)
+            await self._screenshot("login_after_method_click")
 
-            # Krok 3: odeslat formulář
-            submit_selectors = [
-                'button[type="submit"]',
-                'button:has-text("Přihlásit")',
-                'button:has-text("Pokračovat")',
-                'button:has-text("Sign in")',
+            # Krok 2: vyplnit email (Firebase může mít email a heslo na oddělených krocích)
+            email_selectors = [
+                'input[type="email"]',
+                'input[name="email"]',
+                'input[autocomplete="email"]',
+                'input[placeholder*="mail"]',
+                'input[placeholder*="Mail"]',
             ]
-            for sel in submit_selectors:
+            email_filled = False
+            for sel in email_selectors:
+                el = self.page.locator(sel).first
+                if await el.count() > 0:
+                    await el.fill(self.email)
+                    email_filled = True
+                    logger.info(f"Email vyplněn ({sel})")
+                    break
+
+            if not email_filled:
+                raise RuntimeError("Email input nenalezen")
+
+            # Krok 3: submit emailu (Firebase dvoustupňový flow – nejdřív email, pak heslo)
+            for sel in ['button[type="submit"]', 'button:has-text("Další")', 'button:has-text("Pokračovat")', 'button:has-text("Next")']:
+                btn = self.page.locator(sel).first
+                if await btn.count() > 0:
+                    await btn.click()
+                    await self.page.wait_for_timeout(2_000)
+                    break
+
+            await self._screenshot("login_after_email")
+
+            # Krok 4: vyplnit heslo (buď bylo na stejné stránce, nebo se teprve zobrazilo)
+            pwd_selectors = [
+                'input[type="password"]',
+                'input[name="password"]',
+                'input[autocomplete="current-password"]',
+            ]
+            pwd_filled = False
+            for sel in pwd_selectors:
+                el = self.page.locator(sel).first
+                if await el.count() > 0:
+                    await el.fill(self.password)
+                    pwd_filled = True
+                    logger.info(f"Heslo vyplněno ({sel})")
+                    break
+
+            if not pwd_filled:
+                raise RuntimeError("Password input nenalezen")
+
+            # Krok 5: finální submit
+            for sel in ['button[type="submit"]', 'button:has-text("Přihlásit")', 'button:has-text("Sign in")', 'button:has-text("Přihlásit se")']:
                 btn = self.page.locator(sel).first
                 if await btn.count() > 0:
                     await btn.click()
@@ -119,6 +174,7 @@ class DomeumClient:
             await self._screenshot("login_done")
             logger.info("Přihlášení úspěšné")
             return True
+
         except Exception as e:
             logger.error(f"Přihlášení selhalo: {e}")
             await self._screenshot("login_error")
