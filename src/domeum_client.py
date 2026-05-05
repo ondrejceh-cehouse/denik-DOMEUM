@@ -274,20 +274,17 @@ class DomeumClient:
             # Fallback: zkusit URL manipulaci
             current_url = self.page.url
             logger.info(f"Aktuální URL: {current_url}")
+            base = current_url.rstrip("/")
             for suffix in ["/diary", "/construction-diary", "/stavebni-denik", "/denik"]:
-                base = current_url.rstrip("/")
-                # Zkusit připojit suffix k base URL projektu
-                if "/account" in base:
-                    parts = base.split("/")
-                    # Najít index projektu a sestavit URL
-                    diary_url = base + suffix
-                    await self.page.goto(diary_url, wait_until="domcontentloaded")
-                    await self.page.wait_for_timeout(2_000)
-                    if "diary" in self.page.url.lower() or "denik" in self.page.url.lower():
-                        await self._screenshot("diary_nav_url_success")
-                        logger.info(f"Deník nalezen přes URL: {self.page.url}")
-                        return True
-                    break
+                diary_url = base + suffix
+                logger.info(f"Zkouším URL: {diary_url}")
+                await self.page.goto(diary_url, wait_until="domcontentloaded")
+                await self.page.wait_for_timeout(2_000)
+                new_url = self.page.url.lower()
+                if "diary" in new_url or "denik" in new_url:
+                    await self._screenshot("diary_nav_url_success")
+                    logger.info(f"Deník nalezen přes URL: {self.page.url}")
+                    return True
 
             await self._screenshot("diary_nav_error")
             raise RuntimeError("Deník nenalezen – zkontrolujte screenshoty")
