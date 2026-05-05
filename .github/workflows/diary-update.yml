@@ -64,10 +64,11 @@ jobs:
           git diff --staged --quiet || git commit -m "🤖 Update stav [skip ci]"
           git push || echo "Žádné změny"
 
-      - name: 📸 Debug screenshoty při chybě
-        if: failure()
+      - name: 📸 Debug screenshoty
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
           path: /tmp/domeum_debug_*.png
           retention-days: 7
+          if-no-files-found: ignore
