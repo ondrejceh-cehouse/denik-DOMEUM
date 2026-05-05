@@ -237,12 +237,19 @@ class DomeumClient:
     async def navigate_to_diary(self) -> bool:
         """Přejde do sekce Stavební deník."""
         logger.info("Přecházím na Stavební deník")
+        await self._screenshot("diary_nav_start")
         try:
-            diary_link = self.page.locator("text=Stavební deník").first
+            diary_link = self.page.locator(
+                "text=Stavební deník, text=Construction Diary, text=Site Diary, text=Diary"
+            ).first
             await diary_link.click()
             await self._wait_idle()
+            await self._screenshot("diary_nav_after_click")
             # Ověříme, že jsme v deníku
-            await self.page.wait_for_selector("text=Nový záznam", timeout=10_000)
+            confirm = self.page.locator(
+                "text=Nový záznam, text=New record, text=New entry, text=Add entry, text=Add record"
+            )
+            await confirm.first.wait_for(timeout=10_000)
             logger.info("Stavební deník nalezen")
             return True
         except Exception as e:
@@ -306,8 +313,14 @@ class DomeumClient:
         selectors = [
             "text=Nový záznam...",
             "text=Nový záznam",
+            "text=New record...",
+            "text=New record",
+            "text=New entry",
             "[placeholder*='záznam']",
             "[placeholder*='Popište']",
+            "[placeholder*='Describe']",
+            "[placeholder*='describe']",
+            "[placeholder*='record']",
         ]
 
         for sel in selectors:
@@ -326,6 +339,9 @@ class DomeumClient:
         selectors = [
             'textarea[placeholder*="Popište"]',
             'textarea[placeholder*="popište"]',
+            'textarea[placeholder*="Describe"]',
+            'textarea[placeholder*="describe"]',
+            'textarea[placeholder*="record"]',
             'div[contenteditable="true"]',
             "textarea",
         ]
@@ -346,9 +362,11 @@ class DomeumClient:
             # Klikneme na datum picker (zobrazuje "Dnes")
             date_btn_selectors = [
                 "text=Dnes",
+                "text=Today",
                 "[aria-label*='datum']",
                 "[aria-label*='date']",
                 "button:has-text('Dnes')",
+                "button:has-text('Today')",
                 ".date-picker",
             ]
             for sel in date_btn_selectors:
@@ -423,6 +441,11 @@ class DomeumClient:
             'button:has-text("Přidat")',
             'button:has-text("Vytvořit")',
             'button:has-text("Potvrdit")',
+            'button:has-text("Save")',
+            'button:has-text("Add")',
+            'button:has-text("Create")',
+            'button:has-text("Confirm")',
+            'button:has-text("Submit")',
             'button:has-text("OK")',
         ]
         for sel in submit_selectors:
