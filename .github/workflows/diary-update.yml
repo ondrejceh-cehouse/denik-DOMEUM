@@ -11,6 +11,9 @@ on:
         default: 'false'
         type: boolean
 
+permissions:
+  contents: write
+
 jobs:
   update-diary:
     runs-on: ubuntu-latest

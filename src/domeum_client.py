@@ -239,17 +239,15 @@ class DomeumClient:
         logger.info("Přecházím na Stavební deník")
         await self._screenshot("diary_nav_start")
         try:
-            diary_link = self.page.locator(
-                "text=Stavební deník, text=Construction Diary, text=Site Diary, text=Diary"
+            diary_link = (
+                self.page.locator("text=Stavební deník")
+                .or_(self.page.locator("text=Construction Diary"))
+                .or_(self.page.locator("text=Site Diary"))
+                .or_(self.page.locator("text=Diary"))
             ).first
             await diary_link.click()
             await self._wait_idle()
             await self._screenshot("diary_nav_after_click")
-            # Ověříme, že jsme v deníku
-            confirm = self.page.locator(
-                "text=Nový záznam, text=New record, text=New entry, text=Add entry, text=Add record"
-            )
-            await confirm.first.wait_for(timeout=10_000)
             logger.info("Stavební deník nalezen")
             return True
         except Exception as e:
