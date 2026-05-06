@@ -195,34 +195,30 @@ class DomeumClient:
         """Vybere konkrétní projekt podle jména – používá se v multi-project módu."""
         logger.info(f"Přepínám na projekt: {project_name}")
         try:
-            # Pokud už jsme na stránce projektů, přeskočit navigaci
             projects_locator = self.page.locator("text=Your Projects").or_(
                 self.page.locator("text=Vaše projekty")
             )
+
+            # Pokud nejsme na stránce projektů, navigovat na ni
             if await projects_locator.count() == 0:
-                # Zkusíme sidebar home button (ikona domečku)
-                home_btn = self.page.locator('a[href="/account/personal"], a[href="/"], [aria-label*="home" i], [aria-label*="Home"]').first
-                if await home_btn.count() > 0:
-                    await home_btn.click()
+                # Nejprve zkusit link na domovskou stránku v sidebaru (ikonka domu)
+                home_link = self.page.locator('a[href="/account/personal"]').first
+                if await home_link.count() > 0:
+                    await home_link.click()
                     await self._wait_idle()
-                else:
-                    # Fallback: zkusit různé URL dokud nenajdeme projekty
-                    for url in [
-                        "https://domeum.app/account/personal",
-                        "https://domeum.app/account",
-                        "https://domeum.app/projects",
-                        "https://domeum.app",
-                    ]:
-                        await self.page.goto(url, wait_until="domcontentloaded")
-                        await self._wait_idle()
-                        if await projects_locator.count() > 0:
-                            logger.info(f"Projekty nalezeny na: {url}")
-                            break
+                    await self.page.wait_for_timeout(2_000)
+
+                # Pokud stále nejsme na projects stránce, navigovat přímo
+                if await projects_locator.count() == 0:
+                    await self.page.goto("https://domeum.app/account/personal", wait_until="domcontentloaded")
+                    await self._wait_idle()
+                    await self.page.wait_for_timeout(2_000)
 
             await self._screenshot(f"before_project_click_{project_name[:10]}")
-            await projects_locator.first.wait_for(timeout=10_000)
 
+            # Kliknout na projekt (s fallbackem – text může být součástí karty nebo sidebaru)
             project_card = self.page.locator(f"text={project_name}").first
+            await project_card.wait_for(timeout=10_000)
             await project_card.click()
             await self._wait_idle()
             logger.info(f"Projekt '{project_name}' vybrán")
