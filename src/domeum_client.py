@@ -243,34 +243,54 @@ class DomeumClient:
             current_url = self.page.url
             logger.info(f"Aktuální URL: {current_url}")
 
-            # Pokud jsme na /records stránce, počkat na "New record..." pole (až 10s)
-            if "/records" in current_url:
+            # Debug: logovat všechny input/textarea elementy na stránce
+            await self.page.wait_for_timeout(3_000)
+            inputs = await self.page.locator("input, textarea, [contenteditable='true']").all()
+            input_info = []
+            for el in inputs[:20]:
                 try:
-                    await self.page.wait_for_selector(
-                        '[placeholder="New record..."], [placeholder*="New record"]',
-                        timeout=10_000
-                    )
-                    logger.info("Build Records stránka aktivní – deník nalezen")
-                    return True
-                except PlaywrightTimeoutError:
-                    logger.info("New record... pole nenalezeno do 10s, zkusím kliknout Build Records")
+                    tag = await el.evaluate("e => e.tagName")
+                    ph = await el.get_attribute("placeholder") or ""
+                    typ = await el.get_attribute("type") or ""
+                    cls = await el.get_attribute("class") or ""
+                    vis = await el.is_visible()
+                    input_info.append(f"{tag}[type={typ}][placeholder={ph!r}][visible={vis}][class={cls[:40]}]")
+                except Exception:
+                    pass
+            logger.info(f"Vstupní elementy na stránce: {input_info}")
+
+            # Pokud jsme na /records stránce, zkusit různé selektory pro "New record" pole
+            if "/records" in current_url:
+                for sel in [
+                    '[placeholder="New record..."]',
+                    '[placeholder*="New record"]',
+                    '[placeholder*="record" i]',
+                    'textarea',
+                    '[contenteditable="true"]',
+                ]:
+                    locator = self.page.locator(sel).first
+                    if await locator.count() > 0 and await locator.is_visible():
+                        logger.info(f"Build Records pole nalezeno: {sel}")
+                        return True
 
             # Kliknout na "Build Records" v levém postranním menu
             build_rec = self.page.locator('text=Build Records').first
             if await build_rec.count() > 0:
                 await build_rec.click()
                 await self._wait_idle()
-                await self.page.wait_for_timeout(2_000)
+                await self.page.wait_for_timeout(3_000)
                 await self._screenshot("diary_nav_after_click")
-                try:
-                    await self.page.wait_for_selector(
-                        '[placeholder="New record..."], [placeholder*="New record"]',
-                        timeout=10_000
-                    )
-                    logger.info("Deník nalezen po kliknutí Build Records")
-                    return True
-                except PlaywrightTimeoutError:
-                    pass
+                for sel in [
+                    '[placeholder="New record..."]',
+                    '[placeholder*="New record"]',
+                    '[placeholder*="record" i]',
+                    'textarea',
+                    '[contenteditable="true"]',
+                ]:
+                    locator = self.page.locator(sel).first
+                    if await locator.count() > 0 and await locator.is_visible():
+                        logger.info(f"Deník nalezen po kliknutí Build Records: {sel}")
+                        return True
 
             await self._screenshot("diary_nav_error")
             raise RuntimeError("Build Records stránka nedostupná")
