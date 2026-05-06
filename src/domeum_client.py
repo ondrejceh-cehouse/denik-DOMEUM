@@ -235,62 +235,38 @@ class DomeumClient:
     # ─────────────────────────────── Stavební deník ───────────────────────────
 
     async def navigate_to_diary(self) -> bool:
-        """Přejde do sekce Stavební deník."""
-        logger.info("Přecházím na Stavební deník")
-        await self.page.wait_for_timeout(3_000)
+        """Přejde do sekce Build Records (stavební deník)."""
+        logger.info("Přecházím na Build Records")
+        await self.page.wait_for_timeout(2_000)
         await self._screenshot("diary_nav_start")
         try:
-            # Logovat všechny linky pro debug
-            all_links = await self.page.locator("a").all()
-            link_texts = []
-            link_hrefs = []
-            for link in all_links[:30]:
-                try:
-                    t = (await link.text_content() or "").strip()
-                    h = await link.get_attribute("href") or ""
-                    if t or h:
-                        link_texts.append(t)
-                        link_hrefs.append(h)
-                except Exception:
-                    pass
-            logger.info(f"Všechny linky – texty: {link_texts}")
-            logger.info(f"Všechny linky – href: {link_hrefs}")
-
-            # Klíčová slova pro stavební deník (česky i anglicky)
-            diary_keywords = ["stavební deník", "construction diary", "site diary", "diary", "deník", "denik"]
-
-            # Hledáme odkaz podle textu
-            for link_el, text, href in zip(all_links[:30], link_texts, link_hrefs):
-                t_low = text.lower()
-                h_low = href.lower()
-                if any(kw in t_low or kw in h_low for kw in diary_keywords):
-                    logger.info(f"Nalezen deník link: text='{text}' href='{href}'")
-                    await link_el.click()
-                    await self._wait_idle()
-                    await self._screenshot("diary_nav_after_click")
-                    logger.info("Stavební deník nalezen")
-                    return True
-
-            # Fallback: zkusit URL manipulaci
             current_url = self.page.url
             logger.info(f"Aktuální URL: {current_url}")
-            base = current_url.rstrip("/")
-            for suffix in ["/diary", "/construction-diary", "/stavebni-denik", "/denik"]:
-                diary_url = base + suffix
-                logger.info(f"Zkouším URL: {diary_url}")
-                await self.page.goto(diary_url, wait_until="domcontentloaded")
-                await self.page.wait_for_timeout(2_000)
-                new_url = self.page.url.lower()
-                if "diary" in new_url or "denik" in new_url:
-                    await self._screenshot("diary_nav_url_success")
-                    logger.info(f"Deník nalezen přes URL: {self.page.url}")
+
+            # Pokud jsme už na /records stránce, ověřit přítomnost "New record..." pole
+            if "/records" in current_url:
+                new_rec = self.page.locator('[placeholder="New record..."], [placeholder*="New record"]').first
+                if await new_rec.count() > 0:
+                    logger.info("Build Records stránka aktivní – deník nalezen")
+                    return True
+
+            # Kliknout na "Build Records" v levém postranním menu
+            build_rec = self.page.locator('text=Build Records').first
+            if await build_rec.count() > 0:
+                await build_rec.click()
+                await self._wait_idle()
+                await self.page.wait_for_timeout(1_500)
+                await self._screenshot("diary_nav_after_click")
+                new_rec = self.page.locator('[placeholder="New record..."], [placeholder*="New record"]').first
+                if await new_rec.count() > 0:
+                    logger.info("Deník nalezen po kliknutí Build Records")
                     return True
 
             await self._screenshot("diary_nav_error")
-            raise RuntimeError("Deník nenalezen – zkontrolujte screenshoty")
+            raise RuntimeError("Build Records stránka nedostupná")
 
         except Exception as e:
-            logger.error(f"Nelze přejít na Stavební deník: {e}")
+            logger.error(f"Nelze přejít na Build Records: {e}")
             await self._screenshot("diary_nav_error")
             return False
 
@@ -345,41 +321,36 @@ class DomeumClient:
             return False
 
     async def _open_new_entry_modal(self) -> None:
-        """Otevře modal pro nový záznam."""
-        # Zkusíme různé selektory (domeum.app může mít různé implementace)
+        """Klikne na pole 'New record...' pro zahájení záznamu."""
         selectors = [
+            '[placeholder="New record..."]',
+            '[placeholder*="New record"]',
+            '[placeholder*="record" i]',
+            "text=New record...",
             "text=Nový záznam...",
             "text=Nový záznam",
-            "text=New record...",
-            "text=New record",
-            "text=New entry",
-            "[placeholder*='záznam']",
             "[placeholder*='Popište']",
             "[placeholder*='Describe']",
-            "[placeholder*='describe']",
-            "[placeholder*='record']",
         ]
-
         for sel in selectors:
             locator = self.page.locator(sel).first
             if await locator.count() > 0:
                 await locator.click()
                 await self.page.wait_for_timeout(1_500)
-                logger.debug(f"Modal otevřen přes selektor: {sel}")
+                await self._screenshot("new_record_opened")
+                logger.debug(f"New record pole kliknuto: {sel}")
                 return
-
-        raise RuntimeError("Nelze najít tlačítko 'Nový záznam'")
+        raise RuntimeError("Nelze najít pole 'New record...'")
 
     async def _fill_text(self, text: str) -> None:
-        """Vyplní textové pole v modalu."""
-        # Hledáme textarea v modalu
+        """Vyplní text záznamu do aktivního vstupního pole."""
         selectors = [
-            'textarea[placeholder*="Popište"]',
-            'textarea[placeholder*="popište"]',
-            'textarea[placeholder*="Describe"]',
-            'textarea[placeholder*="describe"]',
-            'textarea[placeholder*="record"]',
+            '[placeholder="New record..."]',
+            '[placeholder*="New record"]',
+            'textarea[placeholder*="record" i]',
             'div[contenteditable="true"]',
+            'textarea[placeholder*="Popište"]',
+            'textarea[placeholder*="Describe"]',
             "textarea",
         ]
         for sel in selectors:
@@ -387,10 +358,13 @@ class DomeumClient:
             if await locator.count() > 0:
                 await locator.click()
                 await locator.fill(text)
-                logger.debug("Text vyplněn")
+                logger.debug(f"Text vyplněn přes: {sel}")
+                await self._screenshot("text_filled")
                 return
-
-        raise RuntimeError("Nelze najít textové pole v modalu")
+        # Fallback: psát klávesnicí do aktivního prvku
+        await self.page.keyboard.type(text)
+        logger.debug("Text vyplněn přes keyboard.type()")
+        await self._screenshot("text_filled_keyboard")
 
     async def _set_entry_date(self, date: str) -> None:
         """Nastaví datum záznamu."""
@@ -433,26 +407,29 @@ class DomeumClient:
             logger.warning(f"Nepodařilo se nastavit datum {date}: {e}. Použije se dnešní datum.")
 
     async def _upload_photos(self, photo_paths: List[str]) -> None:
-        """Nahraje fotky jako přílohy k záznamu."""
+        """Nahraje fotky k záznamu."""
         logger.info(f"Nahrávám {len(photo_paths)} fotek...")
+        await self._screenshot("before_upload")
 
-        # Metoda 1: přímý input[type="file"]
+        # Metoda 1: přímý input[type="file"] (hidden)
         file_input = self.page.locator('input[type="file"]').first
         if await file_input.count() > 0:
             await file_input.set_input_files(photo_paths)
-            await self.page.wait_for_timeout(2_000 * len(photo_paths))
+            await self.page.wait_for_timeout(min(2_000 * len(photo_paths), UPLOAD_TIMEOUT))
             logger.debug("Fotky nahrány přes file input")
             return
 
-        # Metoda 2: klik na "Přidat přílohu" a file chooser
-        attach_selectors = [
-            'button:has-text("Přidat přílohu")',
-            'text=Přidat přílohu',
-            '[aria-label*="přílohu"]',
-            '[aria-label*="photo"]',
-            '[aria-label*="foto"]',
+        # Metoda 2: kliknout na ikonku obrázku vedle "New record..." a file chooser
+        photo_btn_selectors = [
+            '[aria-label*="photo" i]',
+            '[aria-label*="image" i]',
+            '[aria-label*="foto" i]',
+            '[title*="photo" i]',
+            '[title*="image" i]',
+            'button:has-text("Add photo")',
+            'button:has-text("Photo")',
         ]
-        for sel in attach_selectors:
+        for sel in photo_btn_selectors + ['button']:
             locator = self.page.locator(sel).first
             if await locator.count() > 0:
                 try:
@@ -460,7 +437,6 @@ class DomeumClient:
                         await locator.click()
                     file_chooser = await fc_info.value
                     await file_chooser.set_files(photo_paths)
-                    # Čekáme na dokončení uploadu (přibližně 3s na fotku)
                     await self.page.wait_for_timeout(min(3_000 * len(photo_paths), UPLOAD_TIMEOUT))
                     logger.debug(f"Fotky nahrány přes file chooser ({sel})")
                     return
@@ -468,7 +444,7 @@ class DomeumClient:
                     logger.debug(f"File chooser selhal ({sel}): {e}")
                     continue
 
-        logger.warning("Nepodařilo se nahrát fotky – nepodporovaný upload mechanismus")
+        logger.warning("Nepodařilo se nahrát fotky")
 
     async def _submit_entry(self) -> None:
         """Odešle formulář záznamu."""

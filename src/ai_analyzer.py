@@ -25,8 +25,8 @@ def init_gemini():
     if not api_key:
         raise ValueError("Chybi environment variable GEMINI_API_KEY")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    logger.info("Gemini 1.5 Flash inicializovan")
+    model = genai.GenerativeModel("gemini-2.0-flash")
+    logger.info("Gemini 2.0 Flash inicializovan")
     return model
 
 
