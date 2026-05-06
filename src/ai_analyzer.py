@@ -22,30 +22,42 @@ RETRY_DELAY = 10
 GEMINI_MODELS = [
     "gemini-2.5-flash-preview-04-17",
     "gemini-2.0-flash-lite",
-    "gemini-2.0-flash-lite-001",
+    "gemini-2.0-flash-001",
     "gemini-1.5-flash-002",
     "gemini-1.5-flash-8b",
 ]
 
 
 def init_gemini():
-    """Inicializuje Gemini API klienta – zkusi první dostupný model."""
+    """Inicializuje Gemini API klienta. Nezkousi dostupnost – chyby se resí pri generování."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("Chybi environment variable GEMINI_API_KEY")
     genai.configure(api_key=api_key)
+    # Vrátíme wrapper, který zkusí modely postupně
+    model = _GeminiMultiModel(GEMINI_MODELS)
+    logger.info(f"Gemini inicializovan (modely: {GEMINI_MODELS[:2]}...)")
+    return model
 
-    for model_name in GEMINI_MODELS:
-        try:
-            model = genai.GenerativeModel(model_name)
-            # Rychly test dostupnosti
-            model.generate_content("test", generation_config={"max_output_tokens": 1})
-            logger.info(f"Gemini inicializovan: {model_name}")
-            return model
-        except Exception as e:
-            logger.warning(f"Model {model_name} nedostupny: {e}")
 
-    raise RuntimeError(f"Zadny Gemini model neni dostupny. Zkouseno: {GEMINI_MODELS}")
+class _GeminiMultiModel:
+    """Wrapper který zkouší více Gemini modelů postupně."""
+    def __init__(self, model_names):
+        self._names = model_names
+
+    def generate_content(self, content, **kwargs):
+        last_err = None
+        for name in self._names:
+            try:
+                m = genai.GenerativeModel(name)
+                result = m.generate_content(content, **kwargs)
+                logger.info(f"Gemini model použit: {name}")
+                return result
+            except Exception as e:
+                logger.warning(f"Gemini model {name} selhal: {e}")
+                last_err = e
+                time.sleep(2)
+        raise last_err
 
 
 def _build_prompt(action_name: str, date: str, photo_count: int) -> str:
