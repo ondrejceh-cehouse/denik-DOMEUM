@@ -243,34 +243,45 @@ class DomeumClient:
             current_url = self.page.url
             logger.info(f"Aktuální URL: {current_url}")
 
-            # Debug: logovat všechny input/textarea elementy na stránce
+            # JS debug: zjistit strukturu DOM
             await self.page.wait_for_timeout(3_000)
-            inputs = await self.page.locator("input, textarea, [contenteditable='true']").all()
-            input_info = []
-            for el in inputs[:20]:
+            dom_info = await self.page.evaluate("""() => {
+                const ce = Array.from(document.querySelectorAll('[contenteditable]')).map(el => ({
+                    tag: el.tagName, ce: el.getAttribute('contenteditable'),
+                    class: el.className.substring(0, 60)
+                }));
+                const hasText = document.body.innerText.includes('New record');
+                let foundEl = null;
+                for (const el of document.querySelectorAll('*')) {
+                    if (el.children.length === 0 && el.textContent.trim() === 'New record...') {
+                        foundEl = {tag: el.tagName, class: el.className.substring(0, 60),
+                                   role: el.getAttribute('role'), html: el.outerHTML.substring(0, 150)};
+                        break;
+                    }
+                }
+                return {ceElements: ce, hasText, foundEl};
+            }""")
+            logger.info(f"DOM debug: {dom_info}")
+
+            # Pokud jsme na /records stránce
+            if "/records" in current_url:
+                # Zkusit Playwright get_by_placeholder
                 try:
-                    tag = await el.evaluate("e => e.tagName")
-                    ph = await el.get_attribute("placeholder") or ""
-                    typ = await el.get_attribute("type") or ""
-                    cls = await el.get_attribute("class") or ""
-                    vis = await el.is_visible()
-                    input_info.append(f"{tag}[type={typ}][placeholder={ph!r}][visible={vis}][class={cls[:40]}]")
+                    nr = self.page.get_by_placeholder("New record...")
+                    if await nr.count() > 0:
+                        logger.info("Deník nalezen přes get_by_placeholder")
+                        return True
                 except Exception:
                     pass
-            logger.info(f"Vstupní elementy na stránce: {input_info}")
-
-            # Pokud jsme na /records stránce, zkusit různé selektory pro "New record" pole
-            if "/records" in current_url:
-                for sel in [
-                    '[placeholder="New record..."]',
-                    '[placeholder*="New record"]',
-                    '[placeholder*="record" i]',
-                    'textarea',
-                    '[contenteditable="true"]',
-                ]:
+                # Zkusit JS detekci textu
+                if dom_info.get("hasText") or dom_info.get("foundEl"):
+                    logger.info("Deník nalezen přes JS text detekci")
+                    return True
+                # Zkusit [contenteditable] bez hodnoty
+                for sel in ['[contenteditable]', 'textarea', '[placeholder*="record" i]']:
                     locator = self.page.locator(sel).first
-                    if await locator.count() > 0 and await locator.is_visible():
-                        logger.info(f"Build Records pole nalezeno: {sel}")
+                    if await locator.count() > 0:
+                        logger.info(f"Deník nalezen: {sel}")
                         return True
 
             # Kliknout na "Build Records" v levém postranním menu
@@ -280,17 +291,10 @@ class DomeumClient:
                 await self._wait_idle()
                 await self.page.wait_for_timeout(3_000)
                 await self._screenshot("diary_nav_after_click")
-                for sel in [
-                    '[placeholder="New record..."]',
-                    '[placeholder*="New record"]',
-                    '[placeholder*="record" i]',
-                    'textarea',
-                    '[contenteditable="true"]',
-                ]:
-                    locator = self.page.locator(sel).first
-                    if await locator.count() > 0 and await locator.is_visible():
-                        logger.info(f"Deník nalezen po kliknutí Build Records: {sel}")
-                        return True
+                dom_info2 = await self.page.evaluate("() => document.body.innerText.includes('New record')")
+                if dom_info2:
+                    logger.info("Deník nalezen po kliknutí Build Records")
+                    return True
 
             await self._screenshot("diary_nav_error")
             raise RuntimeError("Build Records stránka nedostupná")
@@ -352,49 +356,50 @@ class DomeumClient:
 
     async def _open_new_entry_modal(self) -> None:
         """Klikne na pole 'New record...' pro zahájení záznamu."""
-        selectors = [
+        # Metoda 1: JS klik na element s textem "New record..."
+        clicked = await self.page.evaluate("""() => {
+            for (const el of document.querySelectorAll('*')) {
+                if (el.children.length === 0 && el.textContent.trim() === 'New record...') {
+                    el.click();
+                    return 'text:' + el.tagName;
+                }
+            }
+            // Zkusit [contenteditable]
+            const ce = document.querySelector('[contenteditable]');
+            if (ce) { ce.click(); return 'ce:' + ce.tagName; }
+            return null;
+        }""")
+        if clicked:
+            await self.page.wait_for_timeout(1_500)
+            await self._screenshot("new_record_opened")
+            logger.debug(f"New record kliknuto přes JS: {clicked}")
+            return
+
+        # Metoda 2: Playwright selektory
+        for sel in [
+            'text=New record...',
             '[placeholder="New record..."]',
             '[placeholder*="New record"]',
-            '[placeholder*="record" i]',
-            "text=New record...",
-            "text=Nový záznam...",
-            "text=Nový záznam",
-            "[placeholder*='Popište']",
-            "[placeholder*='Describe']",
-        ]
-        for sel in selectors:
+            '[contenteditable]',
+            'textarea',
+        ]:
             locator = self.page.locator(sel).first
             if await locator.count() > 0:
                 await locator.click()
                 await self.page.wait_for_timeout(1_500)
                 await self._screenshot("new_record_opened")
-                logger.debug(f"New record pole kliknuto: {sel}")
+                logger.debug(f"New record kliknuto: {sel}")
                 return
+
         raise RuntimeError("Nelze najít pole 'New record...'")
 
     async def _fill_text(self, text: str) -> None:
         """Vyplní text záznamu do aktivního vstupního pole."""
-        selectors = [
-            '[placeholder="New record..."]',
-            '[placeholder*="New record"]',
-            'textarea[placeholder*="record" i]',
-            'div[contenteditable="true"]',
-            'textarea[placeholder*="Popište"]',
-            'textarea[placeholder*="Describe"]',
-            "textarea",
-        ]
-        for sel in selectors:
-            locator = self.page.locator(sel).first
-            if await locator.count() > 0:
-                await locator.click()
-                await locator.fill(text)
-                logger.debug(f"Text vyplněn přes: {sel}")
-                await self._screenshot("text_filled")
-                return
-        # Fallback: psát klávesnicí do aktivního prvku
-        await self.page.keyboard.type(text)
+        # Metoda 1: Playwright keyboard (funguje s contenteditable i textarea)
+        # Po kliknutí na "New record..." je element fokusovaný – stačí psát
+        await self.page.keyboard.type(text, delay=10)
+        await self._screenshot("text_filled")
         logger.debug("Text vyplněn přes keyboard.type()")
-        await self._screenshot("text_filled_keyboard")
 
     async def _set_entry_date(self, date: str) -> None:
         """Nastaví datum záznamu."""
