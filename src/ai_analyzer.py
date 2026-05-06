@@ -19,15 +19,33 @@ MAX_RETRIES = 3
 RETRY_DELAY = 10
 
 
+GEMINI_MODELS = [
+    "gemini-2.5-flash-preview-04-17",
+    "gemini-2.0-flash-lite",
+    "gemini-2.0-flash-lite-001",
+    "gemini-1.5-flash-002",
+    "gemini-1.5-flash-8b",
+]
+
+
 def init_gemini():
-    """Inicializuje Gemini API klienta."""
+    """Inicializuje Gemini API klienta – zkusi první dostupný model."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("Chybi environment variable GEMINI_API_KEY")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-    logger.info("Gemini 2.0 Flash inicializovan")
-    return model
+
+    for model_name in GEMINI_MODELS:
+        try:
+            model = genai.GenerativeModel(model_name)
+            # Rychly test dostupnosti
+            model.generate_content("test", generation_config={"max_output_tokens": 1})
+            logger.info(f"Gemini inicializovan: {model_name}")
+            return model
+        except Exception as e:
+            logger.warning(f"Model {model_name} nedostupny: {e}")
+
+    raise RuntimeError(f"Zadny Gemini model neni dostupny. Zkouseno: {GEMINI_MODELS}")
 
 
 def _build_prompt(action_name: str, date: str, photo_count: int) -> str:

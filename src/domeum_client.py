@@ -356,42 +356,36 @@ class DomeumClient:
 
     async def _open_new_entry_modal(self) -> None:
         """Klikne na pole 'New record...' pro zahájení záznamu."""
-        # Metoda 1: JS klik na element s textem "New record..."
-        clicked = await self.page.evaluate("""() => {
+        # Najít souřadnice rodičovského kontejneru placeholder divu a kliknout
+        coords = await self.page.evaluate("""() => {
             for (const el of document.querySelectorAll('*')) {
                 if (el.children.length === 0 && el.textContent.trim() === 'New record...') {
-                    el.click();
-                    return 'text:' + el.tagName;
+                    // Jít nahoru po DOM stromu dokud nenajdeme dostatečně velký kontejner
+                    let target = el.parentElement;
+                    while (target && target !== document.body) {
+                        const rect = target.getBoundingClientRect();
+                        if (rect.width > 200 && rect.height > 30) {
+                            return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2,
+                                    tag: target.tagName, cls: target.className.substring(0, 80)};
+                        }
+                        target = target.parentElement;
+                    }
+                    // Fallback: kliknout přímo na placeholder element
+                    const r = el.getBoundingClientRect();
+                    return {x: r.x + r.width/2, y: r.y + r.height/2, tag: el.tagName, cls: 'placeholder'};
                 }
             }
-            // Zkusit [contenteditable]
-            const ce = document.querySelector('[contenteditable]');
-            if (ce) { ce.click(); return 'ce:' + ce.tagName; }
             return null;
         }""")
-        if clicked:
-            await self.page.wait_for_timeout(1_500)
+
+        if coords:
+            logger.info(f"Klikám na kontejner: {coords}")
+            await self.page.mouse.click(coords['x'], coords['y'])
+            await self.page.wait_for_timeout(2_000)
             await self._screenshot("new_record_opened")
-            logger.debug(f"New record kliknuto přes JS: {clicked}")
             return
 
-        # Metoda 2: Playwright selektory
-        for sel in [
-            'text=New record...',
-            '[placeholder="New record..."]',
-            '[placeholder*="New record"]',
-            '[contenteditable]',
-            'textarea',
-        ]:
-            locator = self.page.locator(sel).first
-            if await locator.count() > 0:
-                await locator.click()
-                await self.page.wait_for_timeout(1_500)
-                await self._screenshot("new_record_opened")
-                logger.debug(f"New record kliknuto: {sel}")
-                return
-
-        raise RuntimeError("Nelze najít pole 'New record...'")
+        raise RuntimeError("Nelze najít 'New record...' kontejner")
 
     async def _fill_text(self, text: str) -> None:
         """Vyplní text záznamu do aktivního vstupního pole."""
