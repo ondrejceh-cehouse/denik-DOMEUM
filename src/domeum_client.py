@@ -243,24 +243,34 @@ class DomeumClient:
             current_url = self.page.url
             logger.info(f"Aktuální URL: {current_url}")
 
-            # Pokud jsme už na /records stránce, ověřit přítomnost "New record..." pole
+            # Pokud jsme na /records stránce, počkat na "New record..." pole (až 10s)
             if "/records" in current_url:
-                new_rec = self.page.locator('[placeholder="New record..."], [placeholder*="New record"]').first
-                if await new_rec.count() > 0:
+                try:
+                    await self.page.wait_for_selector(
+                        '[placeholder="New record..."], [placeholder*="New record"]',
+                        timeout=10_000
+                    )
                     logger.info("Build Records stránka aktivní – deník nalezen")
                     return True
+                except PlaywrightTimeoutError:
+                    logger.info("New record... pole nenalezeno do 10s, zkusím kliknout Build Records")
 
             # Kliknout na "Build Records" v levém postranním menu
             build_rec = self.page.locator('text=Build Records').first
             if await build_rec.count() > 0:
                 await build_rec.click()
                 await self._wait_idle()
-                await self.page.wait_for_timeout(1_500)
+                await self.page.wait_for_timeout(2_000)
                 await self._screenshot("diary_nav_after_click")
-                new_rec = self.page.locator('[placeholder="New record..."], [placeholder*="New record"]').first
-                if await new_rec.count() > 0:
+                try:
+                    await self.page.wait_for_selector(
+                        '[placeholder="New record..."], [placeholder*="New record"]',
+                        timeout=10_000
+                    )
                     logger.info("Deník nalezen po kliknutí Build Records")
                     return True
+                except PlaywrightTimeoutError:
+                    pass
 
             await self._screenshot("diary_nav_error")
             raise RuntimeError("Build Records stránka nedostupná")
