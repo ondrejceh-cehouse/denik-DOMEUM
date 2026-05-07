@@ -216,12 +216,23 @@ class DomeumClient:
 
             await self._screenshot(f"before_project_click_{project_name[:10]}")
 
-            # Kliknout na projekt (s fallbackem – text může být součástí karty nebo sidebaru)
+            # Kliknout na projekt
             project_card = self.page.locator(f"text={project_name}").first
             await project_card.wait_for(timeout=10_000)
+            url_before = self.page.url
             await project_card.click()
+            # Počkat na navigaci do projektu (URL se musí změnit na project URL)
+            try:
+                await self.page.wait_for_url(
+                    lambda url: "/project/" in url,
+                    timeout=8_000
+                )
+            except Exception:
+                # Pokud navigace neproběhla, zkusit přímý goto na records
+                pass
             await self._wait_idle()
-            logger.info(f"Projekt '{project_name}' vybrán")
+            await self.page.wait_for_timeout(1_000)
+            logger.info(f"Projekt '{project_name}' vybrán, URL: {self.page.url}")
             return True
         except Exception as e:
             logger.error(f"Projekt '{project_name}' nenalezen: {e}")
@@ -282,6 +293,20 @@ class DomeumClient:
                 if await self.page.evaluate("() => document.body.innerText.includes('New record')"):
                     logger.info("Deník nalezen po kliknutí Build Records")
                     return True
+
+            # Fallback: přejít přímo na records URL aktuálního projektu (zjistit z URL)
+            cur = self.page.url
+            if "/project/" in cur:
+                # Zkratit URL na .../records
+                import re as _re
+                records_url = _re.sub(r'/project/.*', lambda m: m.group(0).split('/records')[0] + '/records', cur)
+                if records_url != cur:
+                    await self.page.goto(records_url, wait_until="domcontentloaded")
+                    await self._wait_idle()
+                    await self.page.wait_for_timeout(2_000)
+                    if await self.page.evaluate("() => document.body.innerText.includes('New record')"):
+                        logger.info("Deník nalezen přes přímý goto records")
+                        return True
 
             await self._screenshot("diary_nav_error")
             raise RuntimeError("Build Records stránka nedostupná")
