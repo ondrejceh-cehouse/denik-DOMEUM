@@ -17,25 +17,55 @@ MAX_RETRIES = 3
 RETRY_DELAY = 10
 
 
-GEMINI_MODELS = [
-    "gemini-2.5-flash-preview-04-17",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash-002",
-    "gemini-1.5-flash-8b",
+GEMINI_MODELS_FALLBACK = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash-latest",
+    "gemini-pro-vision",
 ]
 
 
 def init_gemini():
-    """Inicializuje Gemini API klienta (google-genai SDK, v1 API)."""
+    """Inicializuje Gemini API klienta (google-genai SDK). Zjistí dostupné modely dynamicky."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("Chybi environment variable GEMINI_API_KEY")
     from google import genai
     client = genai.Client(api_key=api_key)
-    model = _GeminiMultiModel(client, GEMINI_MODELS)
-    logger.info(f"Gemini inicializovan (modely: {GEMINI_MODELS[:2]}...)")
+
+    models_to_use = _discover_models(client)
+    model = _GeminiMultiModel(client, models_to_use)
+    logger.info(f"Gemini inicializovan, modely: {models_to_use[:3]}...")
     return model
+
+
+def _discover_models(client) -> list:
+    """Zjistí dostupné multimodální modely přes ListModels API."""
+    try:
+        available = []
+        for m in client.models.list():
+            name = m.name
+            if name.startswith("models/"):
+                name = name[7:]
+            nl = name.lower()
+            if ("flash" in nl or "pro" in nl) and "embedding" not in nl and "aqa" not in nl:
+                available.append(name)
+        if available:
+            logger.info(f"Dostupné modely ({len(available)}): {available[:5]}")
+            # Seřadit – preferovat novější flash/pro
+            def model_priority(n):
+                if "2.5" in n: return 0
+                if "2.0" in n: return 1
+                if "1.5" in n: return 2
+                return 3
+            available.sort(key=model_priority)
+            return available
+    except Exception as e:
+        logger.warning(f"Nelze zjistit seznam modelů: {e}")
+    logger.info(f"Používám fallback seznam modelů: {GEMINI_MODELS_FALLBACK[:3]}")
+    return GEMINI_MODELS_FALLBACK
 
 
 class _GeminiMultiModel:

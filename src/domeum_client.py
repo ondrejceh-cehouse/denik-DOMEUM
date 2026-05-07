@@ -343,6 +343,11 @@ class DomeumClient:
             await self._submit_entry()
 
             logger.info(f"✅ Zápis pro {date} vytvořen")
+
+            # 6. Navigovat zpět na deník – aby 'New record...' byl dostupný pro další zápis
+            await self.page.wait_for_timeout(1_000)
+            await self.navigate_to_diary()
+
             return True
 
         except Exception as e:
@@ -408,7 +413,7 @@ class DomeumClient:
             for sel in date_btn_selectors:
                 locator = self.page.locator(sel).first
                 if await locator.count() > 0:
-                    await locator.click()
+                    await locator.click(force=True)
                     await self.page.wait_for_timeout(800)
                     break
 
