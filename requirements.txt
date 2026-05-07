@@ -5,8 +5,8 @@ google-api-python-client==2.127.0
 google-auth==2.29.0
 google-auth-httplib2==0.2.0
 
-# Google Gemini AI (1.x pouziva API v1, ne v1beta)
-google-generativeai>=1.0.0
+# Google Gemini AI – novy SDK (google-genai, v1 API endpoint)
+google-genai>=1.0.0
 
 # Playwright – ovládání prohlížeče
 playwright==1.44.0

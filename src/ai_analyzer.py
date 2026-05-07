@@ -1,15 +1,13 @@
 """
 ai_analyzer.py - Google Gemini AI analyza fotek
-Posle fotografie do Gemini 1.5 Flash a vygeneruje odborny zapis do stavebniho deniku.
+Posle fotografie do Gemini a vygeneruje odborny zapis do stavebniho deniku.
 """
 
 import logging
 import os
 import time
-from pathlib import Path
-from typing import List, Optional
+from typing import List
 
-import google.generativeai as genai
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -21,36 +19,39 @@ RETRY_DELAY = 10
 
 GEMINI_MODELS = [
     "gemini-2.5-flash-preview-04-17",
+    "gemini-2.0-flash",
     "gemini-2.0-flash-lite",
-    "gemini-2.0-flash-001",
     "gemini-1.5-flash-002",
     "gemini-1.5-flash-8b",
 ]
 
 
 def init_gemini():
-    """Inicializuje Gemini API klienta. Nezkousi dostupnost – chyby se resí pri generování."""
+    """Inicializuje Gemini API klienta (google-genai SDK, v1 API)."""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("Chybi environment variable GEMINI_API_KEY")
-    genai.configure(api_key=api_key)
-    # Vrátíme wrapper, který zkusí modely postupně
-    model = _GeminiMultiModel(GEMINI_MODELS)
+    from google import genai
+    client = genai.Client(api_key=api_key)
+    model = _GeminiMultiModel(client, GEMINI_MODELS)
     logger.info(f"Gemini inicializovan (modely: {GEMINI_MODELS[:2]}...)")
     return model
 
 
 class _GeminiMultiModel:
     """Wrapper který zkouší více Gemini modelů postupně."""
-    def __init__(self, model_names):
+    def __init__(self, client, model_names):
+        self._client = client
         self._names = model_names
 
     def generate_content(self, content, **kwargs):
         last_err = None
         for name in self._names:
             try:
-                m = genai.GenerativeModel(name)
-                result = m.generate_content(content, **kwargs)
+                result = self._client.models.generate_content(
+                    model=name,
+                    contents=content,
+                )
                 logger.info(f"Gemini model použit: {name}")
                 return result
             except Exception as e:
