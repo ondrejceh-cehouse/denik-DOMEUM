@@ -324,6 +324,10 @@ class DomeumClient:
         logger.info(f"Vytvářím zápis pro {date} ({len(photo_paths)} fotek)")
 
         try:
+            # 0. Navigovat na deník těsně před zápisem – stránka se mohla změnit
+            #    během generování AI textu (Gemini ~20s) a 'New record...' zmizel
+            await self.navigate_to_diary()
+
             # 1. Otevřít modal nového záznamu
             await self._open_new_entry_modal()
 
@@ -343,11 +347,6 @@ class DomeumClient:
             await self._submit_entry()
 
             logger.info(f"✅ Zápis pro {date} vytvořen")
-
-            # 6. Navigovat zpět na deník – aby 'New record...' byl dostupný pro další zápis
-            await self.page.wait_for_timeout(1_000)
-            await self.navigate_to_diary()
-
             return True
 
         except Exception as e:
