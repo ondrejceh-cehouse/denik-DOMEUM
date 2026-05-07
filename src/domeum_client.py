@@ -231,54 +231,47 @@ class DomeumClient:
     # ─────────────────────────────── Stavební deník ───────────────────────────
 
     async def navigate_to_diary(self) -> bool:
-        """Přejde do sekce Build Records (stavební deník)."""
+        """Přejde na seznam zápisů (musí být viditelný 'New record...')."""
+        import re
         logger.info("Přecházím na Build Records")
-        await self.page.wait_for_timeout(2_000)
-        await self._screenshot("diary_nav_start")
         try:
             current_url = self.page.url
             logger.info(f"Aktuální URL: {current_url}")
 
-            # JS debug: zjistit strukturu DOM
-            await self.page.wait_for_timeout(3_000)
-            dom_info = await self.page.evaluate("""() => {
-                const ce = Array.from(document.querySelectorAll('[contenteditable]')).map(el => ({
-                    tag: el.tagName, ce: el.getAttribute('contenteditable'),
-                    class: el.className.substring(0, 60)
-                }));
-                const hasText = document.body.innerText.includes('New record');
-                let foundEl = null;
-                for (const el of document.querySelectorAll('*')) {
-                    if (el.children.length === 0 && el.textContent.trim() === 'New record...') {
-                        foundEl = {tag: el.tagName, class: el.className.substring(0, 60),
-                                   role: el.getAttribute('role'), html: el.outerHTML.substring(0, 150)};
-                        break;
-                    }
-                }
-                return {ceElements: ce, hasText, foundEl};
-            }""")
-            logger.info(f"DOM debug: {dom_info}")
+            # Pokud jsme na detailu záznamu (/records/uuid), navigovat zpět na seznam
+            uuid_re = r'/records/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+            if re.search(uuid_re, current_url):
+                base_url = re.sub(uuid_re, '/records', current_url)
+                logger.info(f"Detail záznamu → přecházím na seznam: {base_url}")
+                await self.page.goto(base_url, wait_until="domcontentloaded")
+                await self._wait_idle()
+                await self.page.wait_for_timeout(2_000)
+                current_url = self.page.url
 
-            # Pokud jsme na /records stránce
+            # Zkontrolovat, zda je 'New record...' viditelný
             if "/records" in current_url:
-                # Zkusit Playwright get_by_placeholder
-                try:
-                    nr = self.page.get_by_placeholder("New record...")
-                    if await nr.count() > 0:
-                        logger.info("Deník nalezen přes get_by_placeholder")
-                        return True
-                except Exception:
-                    pass
-                # Zkusit JS detekci textu
+                await self.page.wait_for_timeout(2_000)
+                dom_info = await self.page.evaluate("""() => {
+                    const ce = Array.from(document.querySelectorAll('[contenteditable]')).map(el => ({
+                        tag: el.tagName, ce: el.getAttribute('contenteditable'),
+                        class: el.className.substring(0, 60)
+                    }));
+                    const hasText = document.body.innerText.includes('New record');
+                    let foundEl = null;
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.children.length === 0 && el.textContent.trim() === 'New record...') {
+                            foundEl = {tag: el.tagName, class: el.className.substring(0, 60),
+                                       role: el.getAttribute('role'), html: el.outerHTML.substring(0, 150)};
+                            break;
+                        }
+                    }
+                    return {ceElements: ce, hasText, foundEl};
+                }""")
+                logger.info(f"DOM debug: {dom_info}")
+
                 if dom_info.get("hasText") or dom_info.get("foundEl"):
                     logger.info("Deník nalezen přes JS text detekci")
                     return True
-                # Zkusit [contenteditable] bez hodnoty
-                for sel in ['[contenteditable]', 'textarea', '[placeholder*="record" i]']:
-                    locator = self.page.locator(sel).first
-                    if await locator.count() > 0:
-                        logger.info(f"Deník nalezen: {sel}")
-                        return True
 
             # Kliknout na "Build Records" v levém postranním menu
             build_rec = self.page.locator('text=Build Records').first
@@ -286,9 +279,7 @@ class DomeumClient:
                 await build_rec.click()
                 await self._wait_idle()
                 await self.page.wait_for_timeout(3_000)
-                await self._screenshot("diary_nav_after_click")
-                dom_info2 = await self.page.evaluate("() => document.body.innerText.includes('New record')")
-                if dom_info2:
+                if await self.page.evaluate("() => document.body.innerText.includes('New record')"):
                     logger.info("Deník nalezen po kliknutí Build Records")
                     return True
 
