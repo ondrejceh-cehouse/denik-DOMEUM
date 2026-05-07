@@ -357,23 +357,34 @@ class DomeumClient:
 
     async def _open_new_entry_modal(self) -> None:
         """Klikne na pole 'New record...' pro zahájení záznamu."""
-        # Najít souřadnice rodičovského kontejneru placeholder divu a kliknout
+        # Scrollovat na začátek stránky – placeholder může být mimo viewport
+        await self.page.evaluate("window.scrollTo(0, 0)")
+        await self.page.wait_for_timeout(500)
+
+        # Najít souřadnice rodičovského kontejneru a scrollovat do view
         coords = await self.page.evaluate("""() => {
             for (const el of document.querySelectorAll('*')) {
                 if (el.children.length === 0 && el.textContent.trim() === 'New record...') {
-                    // Jít nahoru po DOM stromu dokud nenajdeme dostatečně velký kontejner
                     let target = el.parentElement;
                     while (target && target !== document.body) {
                         const rect = target.getBoundingClientRect();
                         if (rect.width > 200 && rect.height > 30) {
-                            return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2,
+                            // Scrollovat do view pokud je mimo viewport
+                            if (rect.y < 0 || rect.y > window.innerHeight) {
+                                target.scrollIntoView({ behavior: 'instant', block: 'center' });
+                            }
+                            const r2 = target.getBoundingClientRect();
+                            return {x: r2.x + r2.width / 2, y: r2.y + r2.height / 2,
                                     tag: target.tagName, cls: target.className.substring(0, 80)};
                         }
                         target = target.parentElement;
                     }
-                    // Fallback: kliknout přímo na placeholder element
                     const r = el.getBoundingClientRect();
-                    return {x: r.x + r.width/2, y: r.y + r.height/2, tag: el.tagName, cls: 'placeholder'};
+                    if (r.y < 0 || r.y > window.innerHeight) {
+                        el.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    }
+                    const r2 = el.getBoundingClientRect();
+                    return {x: r2.x + r2.width/2, y: r2.y + r2.height/2, tag: el.tagName, cls: 'placeholder'};
                 }
             }
             return null;
@@ -494,7 +505,7 @@ class DomeumClient:
         for sel in submit_selectors:
             locator = self.page.locator(sel).last  # Poslední submit button v modalu
             if await locator.count() > 0:
-                await locator.click()
+                await locator.click(force=True)
                 await self._wait_idle()
                 await self.page.wait_for_timeout(2_000)
                 logger.debug(f"Záznam odeslán přes: {sel}")
