@@ -108,9 +108,21 @@ async def process_project_folder(drive_service, gemini_model, domeum, project_na
     for photo in new_photos:
         dest = os.path.join(temp_dir, f"{photo['id']}_{photo['name']}")
         try:
-            fallback = photo.get("createdTime", "")[:10]
+            # Primární zdroj data: imageMediaMetadata.time (Drive parsuje EXIF za nás)
+            # Formát: "YYYY:MM:DD HH:MM:SS"
+            meta_time = (photo.get("imageMediaMetadata") or {}).get("time", "")
+            if meta_time and len(meta_time) >= 10:
+                try:
+                    dt = datetime.strptime(meta_time[:19], "%Y:%m:%d %H:%M:%S")
+                    fallback = dt.strftime("%Y-%m-%d")
+                except ValueError:
+                    fallback = photo.get("createdTime", "")[:10]
+            else:
+                fallback = photo.get("createdTime", "")[:10]
+
             local_path = download_photo(drive_service, photo["id"], photo["mimeType"], dest)
             date = get_photo_date(local_path, fallback)
+            logger.debug(f"  Fotka {photo['name']}: meta_time={meta_time!r} → datum={date}")
             photos_by_date[date].append({"id": photo["id"], "name": photo["name"], "path": local_path, "date": date})
         except Exception as e:
             logger.warning(f"  ✗ {photo['name']}: {e}")

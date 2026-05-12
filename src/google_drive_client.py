@@ -86,7 +86,7 @@ def get_photos_in_folder(service, folder_id: str) -> List[Dict]:
     while True:
         params = {
             "q": query,
-            "fields": "nextPageToken, files(id, name, createdTime, modifiedTime, mimeType, size)",
+            "fields": "nextPageToken, files(id, name, createdTime, modifiedTime, mimeType, size, imageMediaMetadata)",
             "pageSize": 1000,
             "orderBy": "createdTime",
             "supportsAllDrives": True,
@@ -143,11 +143,11 @@ def get_photo_date(image_path: str, fallback_date: Optional[str] = None) -> str:
     try:
         img = Image.open(image_path)
 
-        # Pokus o EXIF
+        # Pokus o EXIF – zkusit obě metody (elif by přeskočil getexif() když _getexif() vrátí None)
         exif_data = None
         if hasattr(img, "_getexif"):
             exif_data = img._getexif()
-        elif hasattr(img, "getexif"):
+        if not exif_data and hasattr(img, "getexif"):
             exif_data = img.getexif()
 
         if exif_data:
