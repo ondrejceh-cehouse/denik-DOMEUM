@@ -181,3 +181,73 @@ def format_date_czech(date_str: str) -> str:
         return dt.strftime("%d.%m.%Y")
     except ValueError:
         return date_str
+
+
+def parse_folder_name_as_date(folder_name: str) -> Optional[str]:
+    """
+    Pokusí se interpretovat název složky jako datum.
+    Podporuje formáty: YYYY-MM-DD, DD.MM.YYYY, DD.MM.YY, YYYYMMDD, D.M.YYYY
+    Vrátí datum ve formátu YYYY-MM-DD nebo None.
+    """
+    import re
+    name = folder_name.strip()
+    formats = [
+        (r"^\d{4}-\d{2}-\d{2}$",   "%Y-%m-%d"),
+        (r"^\d{2}\.\d{2}\.\d{4}$", "%d.%m.%Y"),
+        (r"^\d{1,2}\.\d{1,2}\.\d{4}$", "%d.%m.%Y"),
+        (r"^\d{2}\.\d{2}\.\d{2}$", "%d.%m.%y"),
+        (r"^\d{8}$",                "%Y%m%d"),
+    ]
+    for pattern, fmt in formats:
+        if re.match(pattern, name):
+            try:
+                dt = datetime.strptime(name, fmt)
+                return dt.strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+    return None
+
+
+def get_photos_in_folder_recursive(service, folder_id: str) -> List[Dict]:
+    """
+    Vrátí fotky ze složky a jejích podsložek.
+    Pokud má složka podsložky s datem v názvu, fotky z nich dostanou
+    klíč 'folder_date' s tímto datem.
+    """
+    result = []
+
+    # Zkontrolovat podsložky
+    subfolders = []
+    try:
+        query = (
+            f"'{folder_id}' in parents "
+            f"and mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false"
+        )
+        resp = service.files().list(
+            q=query,
+            fields="files(id, name)",
+            pageSize=100,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        subfolders = resp.get("files", [])
+    except Exception as e:
+        logger.warning(f"Nelze načíst podsložky {folder_id}: {e}")
+
+    if subfolders:
+        logger.info(f"  Podsložky nalezeny: {[f['name'] for f in subfolders]}")
+        for subfolder in subfolders:
+            folder_date = parse_folder_name_as_date(subfolder["name"])
+            photos = get_photos_in_folder(service, subfolder["id"])
+            for p in photos:
+                if folder_date:
+                    p["folder_date"] = folder_date
+            result.extend(photos)
+        # Fotky přímo v rodičovské složce (bez podsložky)
+        direct = get_photos_in_folder(service, folder_id)
+        result.extend(direct)
+    else:
+        result = get_photos_in_folder(service, folder_id)
+
+    return result
