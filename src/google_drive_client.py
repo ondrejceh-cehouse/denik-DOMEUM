@@ -134,16 +134,64 @@ def download_photo(service, file_id: str, mime_type: str, dest_path: str) -> str
     return dest_path
 
 
+def _parse_date_from_filename(filename: str) -> Optional[str]:
+    """
+    Pokusí se extrahovat datum z názvu souboru.
+    Podporuje:
+      IMG-YYYYMMDD-WA*   (WhatsApp)
+      VID-YYYYMMDD-WA*   (WhatsApp video)
+      IMG_YYYYMMDD_*     (Android kamera)
+      YYYYMMDD_*         (obecný formát)
+      YYYY-MM-DD*        (ISO formát v názvu)
+    Vrátí YYYY-MM-DD nebo None.
+    """
+    import re
+    stem = Path(filename).stem  # bez přípony
+
+    patterns = [
+        r"(?:IMG|VID)-(\d{8})-WA",        # WhatsApp: IMG-20260508-WA0046
+        r"(?:IMG|VID)_(\d{8})_",           # Android: IMG_20260508_123456
+        r"^(\d{8})_",                       # obecný: 20260508_123456
+        r"(\d{4})-(\d{2})-(\d{2})",        # ISO: 2026-05-08 (zachytí 3 skupiny)
+        r"(\d{4})(\d{2})(\d{2})",           # YYYYMMDD kdekoliv (fallback)
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, stem)
+        if m:
+            groups = m.groups()
+            if len(groups) == 1:
+                s = groups[0]  # YYYYMMDD
+                try:
+                    dt = datetime.strptime(s, "%Y%m%d")
+                    # Sanity check: datum musí být rozumné (2010–2030)
+                    if 2010 <= dt.year <= 2030:
+                        return dt.strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+            elif len(groups) == 3:
+                try:
+                    dt = datetime(int(groups[0]), int(groups[1]), int(groups[2]))
+                    if 2010 <= dt.year <= 2030:
+                        return dt.strftime("%Y-%m-%d")
+                except (ValueError, TypeError):
+                    continue
+    return None
+
+
 def get_photo_date(image_path: str, fallback_date: Optional[str] = None) -> str:
     """
-    Přečte datum pořízení z EXIF metadat.
-    Pokud EXIF datum není dostupné, použije fallback_date nebo dnešní datum.
+    Přečte datum pořízení fotky. Pořadí zdrojů:
+    1. EXIF DateTimeOriginal (nejspolehlivější)
+    2. Datum z názvu souboru (WhatsApp, Android)
+    3. fallback_date (předané zvenčí: Drive imageMediaMetadata nebo createdTime)
+    4. Dnešní datum (nouzový fallback)
     Vrací datum ve formátu YYYY-MM-DD.
     """
     try:
         img = Image.open(image_path)
 
-        # Pokus o EXIF – zkusit obě metody (elif by přeskočil getexif() když _getexif() vrátí None)
+        # Pokus o EXIF – zkusit obě metody
         exif_data = None
         if hasattr(img, "_getexif"):
             exif_data = img._getexif()
@@ -161,12 +209,18 @@ def get_photo_date(image_path: str, fallback_date: Optional[str] = None) -> str:
                         except ValueError:
                             continue
 
-        logger.debug(f"EXIF datum nenalezeno v {image_path}, použiji fallback")
+        logger.debug(f"EXIF datum nenalezeno v {image_path}")
 
     except Exception as e:
         logger.warning(f"Chyba při čtení EXIF z {image_path}: {e}")
 
-    # Fallback: datum z Google Drive metadat
+    # Pokus o datum z názvu souboru
+    filename_date = _parse_date_from_filename(Path(image_path).name)
+    if filename_date:
+        logger.debug(f"Datum z názvu souboru: {filename_date} ({Path(image_path).name})")
+        return filename_date
+
+    # Fallback: datum z Google Drive metadat (předané zvenčí)
     if fallback_date and len(fallback_date) >= 10:
         return fallback_date[:10]
 

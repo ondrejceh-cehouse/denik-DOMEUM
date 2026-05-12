@@ -134,7 +134,13 @@ async def process_project_folder(drive_service, gemini_model, domeum, project_na
 
             local_path = download_photo(drive_service, photo["id"], photo["mimeType"], dest)
             date = get_photo_date(local_path, fallback)
-            final_source = "EXIF" if date != fallback else date_source
+            if date == fallback:
+                final_source = date_source
+            elif date != fallback:
+                # EXIF nebo filename – zjistíme porovnáním s filename parserem
+                from google_drive_client import _parse_date_from_filename
+                fname_date = _parse_date_from_filename(photo["name"])
+                final_source = "filename" if date == fname_date else "EXIF"
             logger.info(f"    {photo['name']}: {date} [{final_source}]")
             photos_by_date[date].append({"id": photo["id"], "name": photo["name"], "path": local_path, "date": date})
         except Exception as e:
