@@ -467,40 +467,60 @@ class DomeumClient:
         logger.info(f"Nahrávám {len(photo_paths)} fotek...")
         await self._screenshot("before_upload")
 
-        # Metoda 1: přímý input[type="file"] (hidden)
-        file_input = self.page.locator('input[type="file"]').first
-        if await file_input.count() > 0:
-            await file_input.set_input_files(photo_paths)
-            await self.page.wait_for_timeout(min(2_000 * len(photo_paths), UPLOAD_TIMEOUT))
-            logger.debug("Fotky nahrány přes file input")
-            return
+        # Počkat, aby se editor plně inicializoval po vyplnění textu
+        await self.page.wait_for_timeout(1_500)
 
-        # Metoda 2: kliknout na ikonku obrázku vedle "New record..." a file chooser
+        # Metoda 1: přímý input[type="file"] (hidden) – zkusit všechny nalezené
+        file_inputs = self.page.locator('input[type="file"]')
+        input_count = await file_inputs.count()
+        logger.info(f"Nalezeno file inputů v DOM: {input_count}")
+
+        for i in range(input_count):
+            try:
+                fi = file_inputs.nth(i)
+                await fi.set_input_files(photo_paths)
+                # Čekat déle – 5s na fotku, max 90s
+                wait_ms = min(5_000 * len(photo_paths), 90_000)
+                await self.page.wait_for_timeout(wait_ms)
+                await self._screenshot("after_upload")
+                logger.info(f"Fotky nahrány přes file input #{i}")
+                return
+            except Exception as e:
+                logger.debug(f"File input #{i} selhal: {e}")
+
+        # Metoda 2: kliknout na tlačítko a zachytit file chooser
         photo_btn_selectors = [
             '[aria-label*="photo" i]',
             '[aria-label*="image" i]',
             '[aria-label*="foto" i]',
+            '[aria-label*="attach" i]',
+            '[aria-label*="upload" i]',
             '[title*="photo" i]',
             '[title*="image" i]',
+            '[title*="attach" i]',
+            '[title*="upload" i]',
             'button:has-text("Add photo")',
             'button:has-text("Photo")',
+            'button:has-text("Attach")',
         ]
-        for sel in photo_btn_selectors + ['button']:
+        for sel in photo_btn_selectors:
             locator = self.page.locator(sel).first
             if await locator.count() > 0:
                 try:
-                    async with self.page.expect_file_chooser(timeout=5_000) as fc_info:
-                        await locator.click()
+                    async with self.page.expect_file_chooser(timeout=8_000) as fc_info:
+                        await locator.click(force=True)
                     file_chooser = await fc_info.value
                     await file_chooser.set_files(photo_paths)
-                    await self.page.wait_for_timeout(min(3_000 * len(photo_paths), UPLOAD_TIMEOUT))
-                    logger.debug(f"Fotky nahrány přes file chooser ({sel})")
+                    wait_ms = min(5_000 * len(photo_paths), 90_000)
+                    await self.page.wait_for_timeout(wait_ms)
+                    await self._screenshot("after_upload_chooser")
+                    logger.info(f"Fotky nahrány přes file chooser ({sel})")
                     return
                 except Exception as e:
                     logger.debug(f"File chooser selhal ({sel}): {e}")
-                    continue
 
-        logger.warning("Nepodařilo se nahrát fotky")
+        await self._screenshot("upload_failed")
+        logger.warning("Nepodařilo se nahrát fotky – žádná metoda nefungovala")
 
     async def _submit_entry(self) -> None:
         """Odešle formulář záznamu."""
