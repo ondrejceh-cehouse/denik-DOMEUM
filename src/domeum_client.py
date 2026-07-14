@@ -535,3 +535,127 @@ class DomeumClient:
         await self.page.keyboard.press("Enter")
         await self._wait_idle()
         logger.debug("Záznam odeslán přes Enter")
+
+    # ─────────────────────────────── Oprava záznamů ──────────────────────────
+
+    async def repair_entry_photos(self, record_uuid: str, photo_paths: List[str]) -> bool:
+        """
+        Přidá fotky k existujícímu záznamu stavebního deníku.
+        Předpokládá, že jsme přihlášeni a nacházíme se v správném projektu.
+        """
+        logger.info(f"🔧 Opravuji záznam {record_uuid[:8]}… ({len(photo_paths)} fotek)")
+
+        # ── 1. Přejdi na seznam záznamů (pokud tam nejsme) ──
+        url = self.page.url
+        if f"/records/{record_uuid}" in url or "/records" not in url:
+            records_base = url.split("/records")[0] + "/records" if "/records" in url \
+                else self.page.url.rstrip("/") + "/records"
+            await self.page.goto(records_base, wait_until="domcontentloaded")
+            await self._wait_idle()
+            await self.page.wait_for_timeout(2_000)
+
+        # ── 2. Skroluj dokud nenajdeme link na záznam (lazy-loading) ──
+        found = False
+        for _ in range(30):
+            found = await self.page.evaluate(
+                f"() => document.querySelector('a[href*=\"/records/{record_uuid}\"]') !== null"
+            )
+            if found:
+                break
+            await self.page.keyboard.press("End")
+            await self.page.wait_for_timeout(500)
+
+        if not found:
+            logger.error(f"Záznam {record_uuid} nenalezen na stránce se záznamy")
+            await self._screenshot(f"repair_not_found_{record_uuid[:8]}")
+            return False
+
+        # ── 3. Scrolluj kartu do středu viewport ──
+        await self.page.evaluate(f"""() => {{
+            const a = document.querySelector('a[href*="/records/{record_uuid}"]');
+            if (a) a.scrollIntoView({{behavior: 'instant', block: 'center'}});
+        }}""")
+        await self.page.wait_for_timeout(800)
+        await self._screenshot(f"repair_before_dots_{record_uuid[:8]}")
+
+        # ── 4. Klikni na "..." (overflow) button záznamu ──
+        clicked = await self.page.evaluate(f"""() => {{
+            const link = document.querySelector('a[href*="/records/{record_uuid}"]');
+            if (!link) return false;
+
+            // Jdi nahoru v DOM a hledej kontejner s tlačítky
+            let el = link;
+            for (let i = 0; i < 20; i++) {{
+                el = el.parentElement;
+                if (!el) break;
+
+                const btns = Array.from(el.querySelectorAll('button'));
+                // "..." button má buď velmi krátký text, nebo aria-label "více" / "more"
+                const dot = btns.find(b => {{
+                    const t = b.textContent.trim();
+                    const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
+                    return t.length <= 3
+                        || lbl.includes('více')
+                        || lbl.includes('more')
+                        || lbl.includes('menu')
+                        || lbl.includes('možnosti')
+                        || lbl.includes('actions');
+                }});
+
+                if (dot) {{
+                    dot.scrollIntoView({{behavior: 'instant', block: 'nearest'}});
+                    dot.click();
+                    return true;
+                }}
+            }}
+            return false;
+        }}""")
+
+        if not clicked:
+            # Záchranný pokus: najdi tlačítka v blízkosti odkazu na záznam a klikni na první
+            link_box = await self.page.locator(f'a[href*="/records/{record_uuid}"]').first.bounding_box()
+            if link_box:
+                # Tlačítko "..." bývá vpravo nahoře na kartě – zkusíme kliknout kousek vpravo
+                await self.page.mouse.click(link_box["x"] + link_box["width"] + 30, link_box["y"] - 10)
+                await self.page.wait_for_timeout(600)
+                clicked = True  # optimisticky, screenshot ukáže pravdu
+
+        if not clicked:
+            logger.error(f"Nepodařilo se kliknout na '...' button pro {record_uuid}")
+            return False
+
+        await self.page.wait_for_timeout(600)
+        await self._screenshot(f"repair_dropdown_{record_uuid[:8]}")
+
+        # ── 5. Klikni na "Upravit" v dropdownu ──
+        upravit = self.page.get_by_text("Upravit", exact=True).first
+        if await upravit.count() == 0:
+            upravit = self.page.locator('[role="menuitem"]:has-text("Upravit")').first
+        if await upravit.count() == 0:
+            upravit = self.page.locator('li:has-text("Upravit"), button:has-text("Upravit")').first
+
+        if await upravit.count() == 0:
+            logger.error(f"Možnost 'Upravit' nenalezena v dropdownu pro {record_uuid}")
+            await self._screenshot(f"repair_no_upravit_{record_uuid[:8]}")
+            return False
+
+        await upravit.click()
+        await self.page.wait_for_timeout(1_500)
+        await self._screenshot(f"repair_modal_{record_uuid[:8]}")
+
+        # ── 6. Počkej na editační modal (file input musí být dostupný) ──
+        try:
+            await self.page.wait_for_selector('#document-upload-input', timeout=12_000)
+        except PlaywrightTimeoutError:
+            logger.error(f"Editační modal se neotevřel (file input nenalezen) pro {record_uuid}")
+            await self._screenshot(f"repair_no_modal_{record_uuid[:8]}")
+            return False
+
+        # ── 7. Nahrej fotky (reuse existing upload logic) ──
+        await self._upload_photos(photo_paths)
+
+        # ── 8. Odešli formulář ──
+        await self._submit_entry()
+
+        logger.info(f"✅ Záznam {record_uuid[:8]} opraven ({len(photo_paths)} fotek)")
+        return True

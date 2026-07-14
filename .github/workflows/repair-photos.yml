@@ -1,0 +1,44 @@
+name: Oprava fotek – jednorázový repair
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalace závislostí
+        run: pip install -r requirements.txt
+
+      - name: Instalace Playwright prohlížečů
+        run: playwright install chromium --with-deps
+
+      - name: Spustit opravu fotek
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_DRIVE_FOLDER_ID:      ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          DOMEUM_EMAIL:                ${{ secrets.DOMEUM_EMAIL }}
+          DOMEUM_PASSWORD:             ${{ secrets.DOMEUM_PASSWORD }}
+          GEMINI_API_KEY:              ${{ secrets.GEMINI_API_KEY }}
+        run: python src/repair_photos.py
+
+      - name: Uložit screenshoty jako artefakt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repair-screenshots
+          path: /tmp/*.png
+          if-no-files-found: ignore
+          retention-days: 7
