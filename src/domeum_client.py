@@ -470,61 +470,46 @@ class DomeumClient:
         # Počkat, aby se editor plně inicializoval po vyplnění textu
         await self.page.wait_for_timeout(1_500)
 
-        # Metoda 1: přímý input[type="file"] (hidden) – zkusit všechny nalezené
-        file_inputs = self.page.locator('input[type="file"]')
-        input_count = await file_inputs.count()
-        logger.info(f"Nalezeno file inputů v DOM: {input_count}")
+        # Cílíme přímo na správný input – id="document-upload-input" (Přidat přílohu)
+        fi = self.page.locator('#document-upload-input').first
 
-        for i in range(input_count):
-            try:
-                fi = file_inputs.nth(i)
-                await fi.set_input_files(photo_paths)
-                # Čekat déle – 5s na fotku, max 90s
-                wait_ms = min(5_000 * len(photo_paths), 90_000)
-                await self.page.wait_for_timeout(wait_ms)
-                await self._screenshot("after_upload")
-                logger.info(f"Fotky nahrány přes file input #{i}")
+        if await fi.count() == 0:
+            # Fallback: hledat jakýkoliv file input v DOM
+            fi = self.page.locator('input[type="file"]').first
+            if await fi.count() == 0:
+                await self._screenshot("upload_failed")
+                logger.warning("Žádný file input nenalezen v DOM")
                 return
-            except Exception as e:
-                logger.debug(f"File input #{i} selhal: {e}")
 
-        # Metoda 2: kliknout na tlačítko a zachytit file chooser
-        photo_btn_selectors = [
-            '[aria-label*="photo" i]',
-            '[aria-label*="image" i]',
-            '[aria-label*="foto" i]',
-            '[aria-label*="attach" i]',
-            '[aria-label*="upload" i]',
-            '[title*="photo" i]',
-            '[title*="image" i]',
-            '[title*="attach" i]',
-            '[title*="upload" i]',
-            'button:has-text("Add photo")',
-            'button:has-text("Photo")',
-            'button:has-text("Attach")',
-        ]
-        for sel in photo_btn_selectors:
-            locator = self.page.locator(sel).first
-            if await locator.count() > 0:
-                try:
-                    async with self.page.expect_file_chooser(timeout=8_000) as fc_info:
-                        await locator.click(force=True)
-                    file_chooser = await fc_info.value
-                    await file_chooser.set_files(photo_paths)
-                    wait_ms = min(5_000 * len(photo_paths), 90_000)
-                    await self.page.wait_for_timeout(wait_ms)
-                    await self._screenshot("after_upload_chooser")
-                    logger.info(f"Fotky nahrány přes file chooser ({sel})")
-                    return
-                except Exception as e:
-                    logger.debug(f"File chooser selhal ({sel}): {e}")
+        try:
+            await fi.set_input_files(photo_paths)
+            logger.info(f"Soubory nastaveny na file input ({len(photo_paths)} fotek) – čekám na dokončení uploadu...")
+
+            # Počkat na dokončení AJAX uploadu – networkidle znamená, že server
+            # přijal všechny soubory a odpověděl. Bez tohoto čekání se record
+            # submitne před dokončením uploadu → fotky skončí v galerii, ale
+            # nejsou přiloženy k záznamu.
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=120_000)
+                logger.info("Síťový provoz ustál – upload dokončen")
+            except PlaywrightTimeoutError:
+                logger.warning("Timeout (120s) čekání na networkidle – pokračuji i tak")
+
+            # Extra buffer po networkidle, aby UI stihlo zpracovat odpověď serveru
+            await self.page.wait_for_timeout(2_000)
+            await self._screenshot("after_upload")
+            return
+
+        except Exception as e:
+            logger.warning(f"Upload selhal: {e}")
 
         await self._screenshot("upload_failed")
-        logger.warning("Nepodařilo se nahrát fotky – žádná metoda nefungovala")
+        logger.warning("Nepodařilo se nahrát fotky")
 
     async def _submit_entry(self) -> None:
         """Odešle formulář záznamu."""
         submit_selectors = [
+            'button:has-text("Zveřejnit")',   # domeum.app – primární tlačítko
             'button[type="submit"]',
             'button:has-text("Uložit")',
             'button:has-text("Přidat")',
