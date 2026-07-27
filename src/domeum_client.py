@@ -206,19 +206,19 @@ class DomeumClient:
                 if await home_link.count() > 0:
                     await home_link.click()
                     await self._wait_idle()
-                    await self.page.wait_for_timeout(2_000)
+                    await self.page.wait_for_timeout(3_000)
 
                 # Pokud stále nejsme na projects stránce, navigovat přímo
                 if await projects_locator.count() == 0:
                     await self.page.goto("https://domeum.app/account/personal", wait_until="domcontentloaded")
                     await self._wait_idle()
-                    await self.page.wait_for_timeout(2_000)
+                    await self.page.wait_for_timeout(5_000)
 
             await self._screenshot(f"before_project_click_{project_name[:10]}")
 
             # Kliknout na projekt
             project_card = self.page.locator(f"text={project_name}").first
-            await project_card.wait_for(timeout=10_000)
+            await project_card.wait_for(timeout=30_000)
             url_before = self.page.url
             await project_card.click()
             # Počkat na navigaci do projektu (URL se musí změnit na project URL)

@@ -116,12 +116,13 @@ async def main():
                 logger.error("Přihlášení selhalo")
                 sys.exit(1)
 
-            # Navigovat přímo na URL deníku – obchází nestabilní select_project_by_name
-            logger.info(f"Naviguji přímo na: {REPAIR_DIARY_URL}")
-            await domeum.page.goto(REPAIR_DIARY_URL, wait_until="domcontentloaded")
-            await domeum.page.wait_for_load_state("networkidle", timeout=60_000)
-            await domeum.page.wait_for_timeout(3_000)
-            logger.info(f"URL po navigaci: {domeum.page.url}")
+            if not await domeum.select_project_by_name(REPAIR_PROJECT_NAME):
+                logger.error(f"Projekt '{REPAIR_PROJECT_NAME}' nenalezen")
+                sys.exit(1)
+
+            if not await domeum.navigate_to_diary():
+                logger.error("Stavební deník nenalezen")
+                sys.exit(1)
 
             repaired = 0
             failed = 0
