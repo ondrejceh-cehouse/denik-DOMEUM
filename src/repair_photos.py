@@ -41,8 +41,9 @@ logger = logging.getLogger("repair")
 # ─── Konfigurace opravy ───────────────────────────────────────────────────────
 
 # Drive složka projektu "RD Cehovi"
-REPAIR_FOLDER_ID = "1-6K5QzvLByremulU3sBpXPo7pfFobJOA"
+REPAIR_FOLDER_ID   = "1-6K5QzvLByremulU3sBpXPo7pfFobJOA"
 REPAIR_PROJECT_NAME = "RD Cehovi"
+REPAIR_DIARY_URL   = "https://domeum.app/account/personal/project/~/rd-cehovi/records"
 MAX_PHOTOS_PER_DAY = 30
 
 # Záznamy, které nemají fotky: datum záznamu → UUID záznamu na domeum.app
@@ -115,13 +116,12 @@ async def main():
                 logger.error("Přihlášení selhalo")
                 sys.exit(1)
 
-            if not await domeum.select_project_by_name(REPAIR_PROJECT_NAME):
-                logger.error(f"Projekt '{REPAIR_PROJECT_NAME}' nenalezen")
-                sys.exit(1)
-
-            if not await domeum.navigate_to_diary():
-                logger.error("Stavební deník nenalezen")
-                sys.exit(1)
+            # Navigovat přímo na URL deníku – obchází nestabilní select_project_by_name
+            logger.info(f"Naviguji přímo na: {REPAIR_DIARY_URL}")
+            await domeum.page.goto(REPAIR_DIARY_URL, wait_until="domcontentloaded")
+            await domeum.page.wait_for_load_state("networkidle", timeout=60_000)
+            await domeum.page.wait_for_timeout(3_000)
+            logger.info(f"URL po navigaci: {domeum.page.url}")
 
             repaired = 0
             failed = 0
