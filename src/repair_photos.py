@@ -47,12 +47,7 @@ MAX_PHOTOS_PER_DAY = 30
 
 # Záznamy, které nemají fotky: datum záznamu → UUID záznamu na domeum.app
 RECORDS_TO_REPAIR = [
-    {"date": "2026-07-01", "uuid": "0fc9a2c9-0990-4db6-a654-63fbb26ec750"},
-    {"date": "2026-06-16", "uuid": "189d1018-d33d-4377-b1db-1f9179ee5de0"},
-    {"date": "2026-06-12", "uuid": "28c13dbc-fcc1-424a-87f5-de04663bea02"},
-    {"date": "2026-05-31", "uuid": "358421d1-4c0b-4ee4-9c1a-f168bdaf8b98"},
-    {"date": "2026-05-30", "uuid": "862762ef-f099-407a-8c6b-3bf13d18633a"},
-    {"date": "2026-05-21", "uuid": "9156c956-5ec7-4288-8809-169cd6889050"},
+    {"date": "2026-07-14", "uuid": "6c420696-07ac-49d0-aead-f34b7d97e166"},
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
