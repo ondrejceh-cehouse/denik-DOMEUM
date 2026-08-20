@@ -17,12 +17,21 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 
+import re as _re
+
 logger = logging.getLogger(__name__)
 
 DOMEUM_URL = "https://domeum.app"
 DEFAULT_TIMEOUT = 15_000   # 15 sekund
 UPLOAD_TIMEOUT  = 60_000   # 60 sekund pro nahrávání fotek
 DEBUG_SCREENSHOT_DIR = "/tmp"
+
+# UUID pattern (36 znaků: 32 hex + 4 pomlčky)
+_UUID_PATTERN = _re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+
+
+class PhotosMissingError(Exception):
+    """Záznam byl vytvořen, ale fotky nebyly přiloženy – kritická chyba."""
 
 
 class DomeumClient:
@@ -365,9 +374,25 @@ class DomeumClient:
             # 5. Odeslat
             await self._submit_entry()
 
-            logger.info(f"✅ Zápis pro {date} vytvořen")
+            # 6. Ověřit, že fotky byly skutečně přiloženy k záznamu
+            if photo_paths:
+                uuid = await self._find_newest_entry_uuid()
+                if uuid:
+                    n = await self._count_photos_on_detail(uuid)
+                    logger.info(f"Ověření fotek záznamu {uuid[:8]}: nalezeno {n} obrázků")
+                    if n < 1:
+                        raise PhotosMissingError(
+                            f"Záznam {date} vytvořen BEZ fotek – detail stránka ukázala 0 načtených obrázků"
+                        )
+                else:
+                    logger.warning("UUID záznamu nenalezeno – ověření fotek přeskočeno")
+
+            logger.info(f"✅ Záznam pro {date} vytvořen včetně fotek")
             return True
 
+        except PhotosMissingError:
+            # PhotosMissingError propagujeme výš – volající ji musí chytit
+            raise
         except Exception as e:
             logger.error(f"❌ Chyba při vytváření zápisu pro {date}: {e}")
             await self._screenshot(f"entry_error_{date}")
@@ -581,6 +606,65 @@ class DomeumClient:
         await self._wait_idle()
         await self.page.wait_for_timeout(2_000)
 
+    # ─────────────────────────── Ověření fotek po vytvoření záznamu ──────────
+
+    async def _find_newest_entry_uuid(self) -> Optional[str]:
+        """Najde UUID nejnovějšího záznamu v aktuálním projektu."""
+        # Pokud jsme přímo na detailu záznamu, vezmi UUID z URL
+        url = self.page.url
+        m = _UUID_PATTERN.search(url.split("/records/")[-1]) if "/records/" in url else None
+        if m:
+            return m.group(0)
+
+        # Jinak navigujeme na seznam záznamů
+        records_url = _re.sub(r'/records.*', '/records', url) if '/records' in url else None
+        if records_url and records_url != url:
+            await self.page.goto(records_url, wait_until="domcontentloaded")
+            await self._wait_idle()
+            await self.page.wait_for_timeout(2_000)
+
+        hrefs: List[str] = await self.page.evaluate("""() =>
+            Array.from(document.querySelectorAll('a[href*="/records/"]'))
+                .map(a => a.getAttribute('href') || '')
+        """)
+        for href in hrefs:
+            m2 = _UUID_PATTERN.search(href)
+            if m2:
+                return m2.group(0)
+        return None
+
+    async def _count_photos_on_detail(self, uuid: str) -> int:
+        """
+        Přejde na detail záznamu a spočítá načtené obrázky s rozměrem ≥ 200 px.
+        Vrací počet – 0 znamená žádné fotky přiloženy.
+        """
+        url = self.page.url
+        base = _re.sub(r'/records.*', '/records', url) if '/records' in url else url.rstrip('/')
+        detail_url = f"{base}/{uuid}"
+
+        if uuid not in self.page.url:
+            await self.page.goto(detail_url, wait_until="domcontentloaded")
+            await self._wait_idle()
+            await self.page.wait_for_timeout(3_000)
+
+        # Scrollneme na konec pro lazy-loading a počkáme na načtení obrázků
+        await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await self.page.wait_for_timeout(2_000)
+        await self.page.evaluate("window.scrollTo(0, 0)")
+        await self.page.wait_for_timeout(1_000)
+
+        await self._screenshot(f"verify_{uuid[:8]}")
+
+        # Počítáme obrázky, které jsou skutečně viditelné (naturalWidth > 0 a rozměr ≥ 200 px)
+        count: int = await self.page.evaluate("""() =>
+            Array.from(document.querySelectorAll('img'))
+                .filter(img => {
+                    if (!img.complete || img.naturalWidth === 0) return false;
+                    return img.naturalWidth >= 200 || img.naturalHeight >= 200;
+                }).length
+        """)
+        return count
+
     # ─────────────────────────────── Oprava záznamů ──────────────────────────
 
     async def repair_entry_photos(self, record_uuid: str, photo_paths: List[str]) -> bool:
@@ -624,66 +708,80 @@ class DomeumClient:
         await self._screenshot(f"repair_before_dots_{record_uuid[:8]}")
 
         # ── 4. Klikni na "..." (overflow) button záznamu ──
-        clicked = await self.page.evaluate(f"""() => {{
+        # DŮLEŽITÉ: JS el.click() nespouští React event handlery pro dropdown.
+        # Musíme použít reálný Playwright mouse click přes koordináty tlačítka.
+        btn_coords = await self.page.evaluate(f"""() => {{
             const link = document.querySelector('a[href*="/records/{record_uuid}"]');
-            if (!link) return false;
-
-            // Jdi nahoru v DOM a hledej kontejner s tlačítky
+            if (!link) return null;
             let el = link;
             for (let i = 0; i < 20; i++) {{
                 el = el.parentElement;
                 if (!el) break;
-
                 const btns = Array.from(el.querySelectorAll('button'));
-                // "..." button má buď velmi krátký text, nebo aria-label "více" / "more"
                 const dot = btns.find(b => {{
                     const t = b.textContent.trim();
                     const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
                     return t.length <= 3
-                        || lbl.includes('více')
-                        || lbl.includes('more')
-                        || lbl.includes('menu')
-                        || lbl.includes('možnosti')
+                        || lbl.includes('více') || lbl.includes('more')
+                        || lbl.includes('menu') || lbl.includes('možnosti')
                         || lbl.includes('actions');
                 }});
-
                 if (dot) {{
                     dot.scrollIntoView({{behavior: 'instant', block: 'nearest'}});
-                    dot.click();
-                    return true;
+                    const r = dot.getBoundingClientRect();
+                    return {{x: r.x + r.width / 2, y: r.y + r.height / 2}};
                 }}
             }}
-            return false;
+            return null;
         }}""")
 
-        if not clicked:
-            # Záchranný pokus: najdi tlačítka v blízkosti odkazu na záznam a klikni na první
+        if btn_coords:
+            await self.page.mouse.click(btn_coords["x"], btn_coords["y"])
+        else:
+            # Záchranný pokus: klik těsně vpravo od linku
             link_box = await self.page.locator(f'a[href*="/records/{record_uuid}"]').first.bounding_box()
             if link_box:
-                # Tlačítko "..." bývá vpravo nahoře na kartě – zkusíme kliknout kousek vpravo
-                await self.page.mouse.click(link_box["x"] + link_box["width"] + 30, link_box["y"] - 10)
-                await self.page.wait_for_timeout(600)
-                clicked = True  # optimisticky, screenshot ukáže pravdu
+                await self.page.mouse.click(
+                    link_box["x"] + link_box["width"] - 20,
+                    link_box["y"] + link_box["height"] / 2,
+                )
+            else:
+                logger.error(f"Nepodařilo se najít '...' button pro {record_uuid}")
+                return False
 
-        if not clicked:
-            logger.error(f"Nepodařilo se kliknout na '...' button pro {record_uuid}")
-            return False
-
-        await self.page.wait_for_timeout(600)
+        await self.page.wait_for_timeout(800)
         await self._screenshot(f"repair_dropdown_{record_uuid[:8]}")
 
         # ── 5. Klikni na "Upravit" v dropdownu ──
-        upravit = self.page.get_by_text("Upravit", exact=True).first
-        if await upravit.count() == 0:
-            upravit = self.page.locator('[role="menuitem"]:has-text("Upravit")').first
-        if await upravit.count() == 0:
-            upravit = self.page.locator('li:has-text("Upravit"), button:has-text("Upravit")').first
+        # Zkusíme všechny běžné vzory; čekáme na viditelnost před kliknutím
+        upravit = None
+        for sel in [
+            '[role="menuitem"]:has-text("Upravit")',
+            '[role="option"]:has-text("Upravit")',
+            'li:has-text("Upravit")',
+            'button:has-text("Upravit")',
+            '[role="menuitem"]:has-text("Edit")',
+            'li:has-text("Edit")',
+        ]:
+            loc = self.page.locator(sel).first
+            if await loc.count() > 0:
+                upravit = loc
+                break
+        # Poslední šance – hledáme jakýkoliv prvek s textem "Upravit"
+        if upravit is None:
+            gen = self.page.get_by_text("Upravit", exact=True).first
+            if await gen.count() > 0:
+                upravit = gen
 
-        if await upravit.count() == 0:
+        if upravit is None:
             logger.error(f"Možnost 'Upravit' nenalezena v dropdownu pro {record_uuid}")
             await self._screenshot(f"repair_no_upravit_{record_uuid[:8]}")
             return False
 
+        try:
+            await upravit.wait_for(state="visible", timeout=5_000)
+        except PlaywrightTimeoutError:
+            logger.warning("'Upravit' není visible – zkusím kliknout i tak")
         await upravit.click()
         await self.page.wait_for_timeout(1_500)
         await self._screenshot(f"repair_modal_{record_uuid[:8]}")

@@ -27,7 +27,7 @@ from google_drive_client import (
     get_photo_date,
     format_date_czech,
 )
-from domeum_client import DomeumClient
+from domeum_client import DomeumClient, PhotosMissingError
 from ai_analyzer import init_gemini, analyze_photos_for_diary
 from state_manager import (
     load_state,
@@ -49,7 +49,7 @@ logger = logging.getLogger("main")
 
 MAIN_FOLDER_ID = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
 DRY_RUN        = os.environ.get("DRY_RUN", "false").lower() == "true"
-MAX_PHOTOS_PER_DAY = 30
+MAX_PHOTOS_PER_DAY = 10
 
 
 def match_projects_to_folders(domeum_projects, drive_folders):
@@ -78,32 +78,37 @@ def match_projects_to_folders(domeum_projects, drive_folders):
     return matches
 
 
-async def process_project_folder(drive_service, gemini_model, domeum, project_name, folder_id, state, temp_dir):
-    """Zpracuje fotky z Google Drive a zapíše do stavebního deníku projektu."""
+async def process_project_folder(drive_service, gemini_model, domeum, project_name, folder_id, state, temp_dir) -> tuple[int, list[str]]:
+    """
+    Zpracuje fotky z Google Drive a zapíše do stavebního deníku projektu.
+    Vrací (počet vytvořených zápisů, seznam datumů se chybějícími fotkami).
+    """
     logger.info("")
     logger.info("═══════════════════════════════════════════════════")
     logger.info(f"🏗️  PROJEKT: {project_name}")
     logger.info("═══════════════════════════════════════════════════")
 
+    missing_photos: list[str] = []
+
     if not await domeum.select_project_by_name(project_name):
         logger.error(f"  Nelze přepnout na projekt '{project_name}', přeskakuji.")
-        return 0
+        return 0, missing_photos
 
     if not await domeum.navigate_to_diary():
         logger.error(f"  Stavební deník nenalezen, přeskakuji.")
-        return 0
+        return 0, missing_photos
 
     all_photos = get_photos_in_folder_recursive(drive_service, folder_id)
     if not all_photos:
         logger.info("  Žádné fotky v složce.")
-        return 0
+        return 0, missing_photos
 
     new_photos = [p for p in all_photos if not is_photo_processed(state, folder_id, p["id"])]
     logger.info(f"  Celkem fotek: {len(all_photos)} | Nových: {len(new_photos)}")
 
     if not new_photos:
         logger.info("  Žádné nové fotky, přeskakuji.")
-        return 0
+        return 0, missing_photos
 
     photos_by_date = defaultdict(list)
     for photo in new_photos:
@@ -168,20 +173,30 @@ async def process_project_folder(drive_service, gemini_model, domeum, project_na
         diary_text = analyze_photos_for_diary(gemini_model, photo_paths, project_name, czech_date)
 
         logger.info(f"  📝 Vytvářím záznam v domeum.app...")
-        success = await domeum.create_diary_entry(text=diary_text, date=date, photo_paths=photo_paths)
+        try:
+            success = await domeum.create_diary_entry(text=diary_text, date=date, photo_paths=photo_paths)
+        except PhotosMissingError as exc:
+            # Záznam byl vytvořen (text ✓), ale fotky nebyly přiloženy.
+            # Označíme záznam jako vytvořený (zabraňuje duplicitě), ale NEoznačujeme
+            # fotky – zůstanou nezpracované pro repair workflow.
+            mark_diary_entry(state, folder_id, date)
+            logger.critical(f"  💥 KRITICKÁ CHYBA – FOTKY CHYBÍ: {exc}")
+            missing_photos.append(date)
+            await asyncio.sleep(3)
+            continue
 
         if success:
             for p in date_photos:
                 mark_photo_processed(state, folder_id, p["id"], date)
             mark_diary_entry(state, folder_id, date)
             entries_created += 1
-            logger.info(f"  ✅ Záznam vytvořen: {czech_date}")
+            logger.info(f"  ✅ Záznam vytvořen včetně fotek: {czech_date}")
         else:
             logger.error(f"  ❌ Zápis selhal: {czech_date}")
 
         await asyncio.sleep(3)
 
-    return entries_created
+    return entries_created, missing_photos
 
 
 async def main():
@@ -214,6 +229,7 @@ async def main():
     logger.info(f"Drive složky: {[f['name'] for f in drive_folders]}")
 
     total_entries = 0
+    all_missing_photos: list[str] = []
 
     with tempfile.TemporaryDirectory() as temp_dir:
         async with DomeumClient() as domeum:
@@ -256,12 +272,13 @@ async def main():
 
             for pair in pairs:
                 try:
-                    count = await process_project_folder(
+                    count, missing = await process_project_folder(
                         drive_service, gemini_model, domeum,
                         pair["project_name"], pair["folder_id"],
                         state, temp_dir
                     )
                     total_entries += count
+                    all_missing_photos.extend(missing)
                     save_state(state)
                 except KeyboardInterrupt:
                     break
@@ -274,6 +291,15 @@ async def main():
     logger.info("═══════════════════════════════════════════════════════════")
     logger.info(f"✅ HOTOVO! Vytvořeno zápisů: {total_entries}")
     logger.info("═══════════════════════════════════════════════════════════")
+
+    if all_missing_photos:
+        logger.critical("")
+        logger.critical("═══════════════════════════════════════════════════════════")
+        logger.critical(f"💥 KRITICKÁ CHYBA: {len(all_missing_photos)} ZÁPISŮ BEZ FOTEK!")
+        logger.critical(f"   Záznamy: {all_missing_photos}")
+        logger.critical("   → Spusťte workflow 'Oprava fotek' pro přiložení fotek.")
+        logger.critical("═══════════════════════════════════════════════════════════")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
