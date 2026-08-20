@@ -699,17 +699,28 @@ class DomeumClient:
             await self._screenshot(f"repair_not_found_{record_uuid[:8]}")
             return False
 
-        # ── 3. Scrolluj kartu do středu viewport ──
+        # ── 3. Scrolluj kartu do středu viewport a hover nad ní ──
+        # Hover je nutný: "..." button bývá skrytý (display:none/opacity:0) a
+        # zobrazí se teprve při :hover nad kartou. Bez hoveru getBoundingClientRect
+        # vrátí 0,0 → mouse.click skočí do rohu stránky.
         await self.page.evaluate(f"""() => {{
             const a = document.querySelector('a[href*="/records/{record_uuid}"]');
             if (a) a.scrollIntoView({{behavior: 'instant', block: 'center'}});
         }}""")
-        await self.page.wait_for_timeout(2_000)
+        await self.page.wait_for_timeout(1_000)
+
+        # Reálný Playwright hover nad kartou záznamu
+        record_locator = self.page.locator(f'a[href*="/records/{record_uuid}"]').first
+        try:
+            await record_locator.hover(timeout=5_000)
+        except Exception:
+            pass  # hover nezbytný, ale nefatální – zkusíme dál
+        await self.page.wait_for_timeout(600)
         await self._screenshot(f"repair_before_dots_{record_uuid[:8]}")
 
         # ── 4. Klikni na "..." (overflow) button záznamu ──
-        # DŮLEŽITÉ: JS el.click() nespouští React event handlery pro dropdown.
-        # Musíme použít reálný Playwright mouse click přes koordináty tlačítka.
+        # Používáme reálný Playwright mouse click (ne JS el.click() – ten
+        # nespouští React onMouseDown handlery potřebné pro dropdown).
         btn_coords = await self.page.evaluate(f"""() => {{
             const link = document.querySelector('a[href*="/records/{record_uuid}"]');
             if (!link) return null;
@@ -727,29 +738,32 @@ class DomeumClient:
                         || lbl.includes('actions');
                 }});
                 if (dot) {{
-                    dot.scrollIntoView({{behavior: 'instant', block: 'nearest'}});
                     const r = dot.getBoundingClientRect();
-                    return {{x: r.x + r.width / 2, y: r.y + r.height / 2}};
+                    // Vrátíme null pokud je element skrytý (r.width == 0)
+                    if (r.width === 0 && r.height === 0) return null;
+                    return {{x: r.x + r.width / 2, y: r.y + r.height / 2, found: true}};
                 }}
             }}
             return null;
         }}""")
 
-        if btn_coords:
+        if btn_coords and btn_coords.get("found"):
+            logger.info(f"  '...' button nalezen na ({btn_coords['x']:.0f}, {btn_coords['y']:.0f})")
             await self.page.mouse.click(btn_coords["x"], btn_coords["y"])
         else:
-            # Záchranný pokus: klik těsně vpravo od linku
-            link_box = await self.page.locator(f'a[href*="/records/{record_uuid}"]').first.bounding_box()
+            # Záchranný pokus: klik do pravého horního rohu karty
+            link_box = await record_locator.bounding_box()
             if link_box:
+                logger.warning("  '...' button nenalezen přes JS – zkouším pravý roh karty")
                 await self.page.mouse.click(
-                    link_box["x"] + link_box["width"] - 20,
-                    link_box["y"] + link_box["height"] / 2,
+                    link_box["x"] + link_box["width"] - 16,
+                    link_box["y"] + 16,
                 )
             else:
                 logger.error(f"Nepodařilo se najít '...' button pro {record_uuid}")
                 return False
 
-        await self.page.wait_for_timeout(800)
+        await self.page.wait_for_timeout(1_000)
         await self._screenshot(f"repair_dropdown_{record_uuid[:8]}")
 
         # ── 5. Klikni na "Upravit" v dropdownu ──
