@@ -568,13 +568,14 @@ class DomeumClient:
     async def _submit_entry(self) -> None:
         """Odešle formulář záznamu a počká na uložení na serveru."""
         submit_selectors = [
-            'button:has-text("Zveřejnit")',   # domeum.app – primární tlačítko
+            'button:has-text("Zveřejnit")',    # domeum.app – nový záznam
+            'button:has-text("Update Record")', # domeum.app – editace záznamu (detail stránka)
             'button[type="submit"]',
             'button:has-text("Uložit")',
+            'button:has-text("Save")',
             'button:has-text("Přidat")',
             'button:has-text("Vytvořit")',
             'button:has-text("Potvrdit")',
-            'button:has-text("Save")',
             'button:has-text("Add")',
             'button:has-text("Create")',
             'button:has-text("Confirm")',
@@ -670,8 +671,10 @@ class DomeumClient:
     async def repair_entry_photos(self, record_uuid: str, photo_paths: List[str]) -> bool:
         """
         Přidá fotky k existujícímu záznamu stavebního deníku.
-        Přístup: naviguje PŘÍMO na detail záznamu (/records/{uuid}), kde jsou
-        editační prvky dostupnější než v list view (není třeba hover+dropdown).
+
+        Domeum.app DETAIL stránka (/records/{uuid}) je rovnou v editačním módu –
+        zobrazuje TipTap editor, file input a tlačítko "Update Record".
+        Není třeba klikat žádný edit button – stačí nahrát fotky a uložit.
         """
         logger.info(f"🔧 Opravuji záznam {record_uuid[:8]}… ({len(photo_paths)} fotek)")
 
@@ -681,129 +684,44 @@ class DomeumClient:
             else url.rstrip('/') + '/records'
         detail_url = f"{records_base}/{record_uuid}"
 
-        if record_uuid not in url:
-            logger.info(f"  Přecházím na detail záznamu: {detail_url}")
-            await self.page.goto(detail_url, wait_until="domcontentloaded")
-            await self._wait_idle()
-            await self.page.wait_for_timeout(2_000)
-
+        logger.info(f"  Přecházím na detail záznamu: {detail_url}")
+        await self.page.goto(detail_url, wait_until="domcontentloaded")
+        await self._wait_idle()
+        # Čekáme déle – TipTap editor + file input se inicializují asynchronně
+        await self.page.wait_for_timeout(4_000)
         await self._screenshot(f"repair_detail_{record_uuid[:8]}")
 
-        # ── 2. Diagnostika: vypsat všechny buttony na stránce ───────────────────
+        # ── 2. Diagnostika: buttony + file inputy ───────────────────────────────
         all_btns = await self.page.evaluate("""() =>
-            Array.from(document.querySelectorAll('button, [role="button"], [role="menuitem"]'))
+            Array.from(document.querySelectorAll('button, [role="button"]'))
                 .map(b => ({
-                    tag: b.tagName,
                     text: b.textContent.trim().substring(0, 40),
                     label: b.getAttribute('aria-label') || '',
-                    title: b.getAttribute('title') || '',
                     visible: b.getBoundingClientRect().width > 0,
                 }))
         """)
-        logger.info(f"  Buttony na stránce ({len(all_btns)}): "
-                    + str([f"{b['text']!r}({b['label']!r})" for b in all_btns[:15]]))
+        fi_count = await self.page.locator('input[type="file"]').count()
+        logger.info(f"  Buttony ({len(all_btns)}): "
+                    + str([f"{b['text']!r}({b['label']!r})" for b in all_btns[:20]]))
+        logger.info(f"  File inputs v DOM: {fi_count}")
 
-        # ── 3. Najdi tlačítko pro editaci záznamu ───────────────────────────────
-        edit_btn = None
+        # ── 3. Ověř, že file input existuje; pokud ne, scrolluj dolů ────────────
+        if fi_count == 0:
+            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await self.page.wait_for_timeout(1_500)
+            fi_count = await self.page.locator('input[type="file"]').count()
+            logger.info(f"  File inputs po scrollu: {fi_count}")
 
-        # 3a. Přímé selektory pro edit button na detail stránce
-        for sel in [
-            'button:has-text("Upravit")',
-            'a:has-text("Upravit")',
-            '[role="button"]:has-text("Upravit")',
-            '[aria-label*="uprav" i]',
-            '[aria-label*="edit" i]',
-            'button[title*="uprav" i]',
-            '[data-testid*="edit" i]',
-            'button:has-text("Edit")',
-        ]:
-            loc = self.page.locator(sel).first
-            if await loc.count() > 0:
-                edit_btn = loc
-                logger.info(f"  Edit button nalezen: {sel}")
-                break
-
-        # 3b. "..." overflow button na detail stránce (hover před hledáním)
-        if edit_btn is None:
-            logger.info("  Přímý edit button nenalezen – hledám '...' overflow menu")
-            # Zkusíme hover na hlavní obsah stránky
-            try:
-                await self.page.locator('main, article, [role="main"]').first.hover(timeout=3_000)
-            except Exception:
-                pass
-            await self.page.wait_for_timeout(500)
-
-            overflow_coords = await self.page.evaluate("""() => {
-                const btns = Array.from(document.querySelectorAll(
-                    'button, [role="button"], [role="menuitem"]'
-                ));
-                const dot = btns.find(b => {
-                    const t = b.textContent.trim();
-                    const lbl = (b.getAttribute('aria-label') || '').toLowerCase();
-                    const r = b.getBoundingClientRect();
-                    if (r.width === 0) return false;  // skrytý
-                    return t.length <= 3
-                        || lbl.includes('více') || lbl.includes('more')
-                        || lbl.includes('menu') || lbl.includes('možnosti')
-                        || lbl.includes('actions') || lbl.includes('options');
-                });
-                if (!dot) return null;
-                const r = dot.getBoundingClientRect();
-                return {x: r.x + r.width / 2, y: r.y + r.height / 2};
-            }""")
-
-            if overflow_coords:
-                logger.info(f"  '...' overflow na ({overflow_coords['x']:.0f}, {overflow_coords['y']:.0f}) – klikám")
-                await self.page.mouse.click(overflow_coords["x"], overflow_coords["y"])
-                await self.page.wait_for_timeout(800)
-                await self._screenshot(f"repair_overflow_{record_uuid[:8]}")
-
-                # Hledáme "Upravit" v otevřeném dropdown menu
-                for sel in [
-                    '[role="menuitem"]:has-text("Upravit")',
-                    '[role="option"]:has-text("Upravit")',
-                    'li:has-text("Upravit")',
-                    'button:has-text("Upravit")',
-                    '[role="menuitem"]:has-text("Edit")',
-                    'li:has-text("Edit")',
-                ]:
-                    loc = self.page.locator(sel).first
-                    if await loc.count() > 0:
-                        edit_btn = loc
-                        logger.info(f"  Upravit nalezeno v dropdown: {sel}")
-                        break
-                if edit_btn is None:
-                    gen = self.page.get_by_text("Upravit", exact=True).first
-                    if await gen.count() > 0:
-                        edit_btn = gen
-                        logger.info("  Upravit nalezeno přes get_by_text")
-
-        if edit_btn is None:
-            logger.error(f"Editační element nenalezen pro {record_uuid}")
-            await self._screenshot(f"repair_no_edit_{record_uuid[:8]}")
+        if fi_count == 0:
+            logger.error(f"File input nenalezen na detail stránce {record_uuid}")
+            await self._screenshot(f"repair_no_input_{record_uuid[:8]}")
             return False
 
-        # ── 4. Klikni na editační tlačítko ──────────────────────────────────────
-        try:
-            await edit_btn.wait_for(state="visible", timeout=5_000)
-        except PlaywrightTimeoutError:
-            logger.warning("Edit button není visible – klikám i tak")
-        await edit_btn.click()
-        await self.page.wait_for_timeout(1_500)
-        await self._screenshot(f"repair_modal_{record_uuid[:8]}")
-
-        # ── 5. Počkej na editační modal (file input musí být dostupný) ──────────
-        try:
-            await self.page.wait_for_selector('#document-upload-input', timeout=12_000)
-        except PlaywrightTimeoutError:
-            logger.error(f"Editační modal se neotevřel pro {record_uuid}")
-            await self._screenshot(f"repair_no_modal_{record_uuid[:8]}")
-            return False
-
-        # ── 6. Nahrej fotky ──────────────────────────────────────────────────────
+        # ── 4. Nahrej fotky ──────────────────────────────────────────────────────
+        # Stránka je v editačním módu – rovnou uploadujeme, bez klikání na edit btn.
         await self._upload_photos(photo_paths)
 
-        # ── 7. Odešli formulář ───────────────────────────────────────────────────
+        # ── 5. Uložit přes "Update Record" (primární) nebo jiný submit ──────────
         await self._submit_entry()
 
         logger.info(f"✅ Záznam {record_uuid[:8]} opraven ({len(photo_paths)} fotek)")
