@@ -44,7 +44,7 @@ logger = logging.getLogger("repair")
 REPAIR_FOLDER_ID   = "1-6K5QzvLByremulU3sBpXPo7pfFobJOA"
 REPAIR_PROJECT_NAME = "RD Cehovi"
 REPAIR_DIARY_URL   = "https://domeum.app/account/personal/project/~/rd-cehovi/records"
-MAX_PHOTOS_PER_DAY = 30
+MAX_PHOTOS_PER_DAY = 8
 
 # Záznamy, které nemají fotky: datum záznamu → UUID záznamu na domeum.app
 RECORDS_TO_REPAIR = [
@@ -104,9 +104,18 @@ async def main():
             except Exception as e:
                 logger.warning(f"  ✗ {photo['name']}: {e}")
 
+        # Deduplikuj podle basename (Drive může mít duplicitní soubory)
         for d in sorted(repair_dates):
-            n = len(photos_by_date.get(d, []))
-            logger.info(f"  {d}: {n} fotek nalezeno")
+            paths = photos_by_date.get(d, [])
+            seen_names: set[str] = set()
+            deduped = []
+            for p in paths:
+                name = os.path.basename(p).split("_", 1)[-1]  # odstraní ID prefix
+                if name not in seen_names:
+                    seen_names.add(name)
+                    deduped.append(p)
+            photos_by_date[d] = deduped
+            logger.info(f"  {d}: {len(deduped)} fotek po deduplikaci (bylo {len(paths)})")
 
         # ── Opravuj záznamy přes Playwright ──────────────────────────────────
         logger.info("\n🌐 Spouštím Playwright…")

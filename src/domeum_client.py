@@ -470,47 +470,78 @@ class DomeumClient:
         logger.info(f"Nahrávám {len(photo_paths)} fotek...")
         await self._screenshot("before_upload")
 
-        # Počkat, aby se editor plně inicializoval po vyplnění textu
-        await self.page.wait_for_timeout(1_500)
+        # Počkat, aby se editor (modal) plně inicializoval
+        await self.page.wait_for_timeout(2_000)
 
-        # Cílíme přímo na správný input – id="document-upload-input" (Přidat přílohu)
-        fi = self.page.locator('#document-upload-input').first
+        upload_triggered = False
 
-        if await fi.count() == 0:
-            # Fallback: hledat jakýkoliv file input v DOM
-            fi = self.page.locator('input[type="file"]').first
-            if await fi.count() == 0:
+        # ── Pokus 1: expect_file_chooser přes label (nejspolehlivější) ──────────
+        # Klikneme na label[for="document-upload-input"], čímž se otevře file dialog.
+        # Playwright ho zachytí a naplní soubory – tato cesta správně spustí všechny
+        # React event handlery.
+        label_loc = self.page.locator('label[for="document-upload-input"]').first
+        if await label_loc.count() > 0:
+            try:
+                async with self.page.expect_file_chooser(timeout=8_000) as fc_info:
+                    await label_loc.click()
+                fc = await fc_info.value
+                await fc.set_files(photo_paths)
+                upload_triggered = True
+                logger.info("Soubory nastaveny přes file chooser (label)")
+            except Exception as e:
+                logger.warning(f"expect_file_chooser přes label selhal: {e}")
+
+        # ── Pokus 2: scoped locator na aktivní dialog ────────────────────────────
+        # Fallback: hledáme file input uvnitř modalu ([role="dialog"]).
+        # Pokud by bylo více file inputů na stránce, první z nich (mimo modal)
+        # by byl špatný cíl → scoping na dialog to opravuje.
+        if not upload_triggered:
+            fi = None
+            dialog = self.page.locator('[role="dialog"]').last
+            if await dialog.count() > 0:
+                fi_in = dialog.locator('#document-upload-input, input[type="file"]').first
+                if await fi_in.count() > 0:
+                    fi = fi_in
+                    logger.info("File input nalezen uvnitř [role=dialog]")
+
+            if fi is None:
+                fi = self.page.locator('#document-upload-input').first
+                if await fi.count() == 0:
+                    fi = self.page.locator('input[type="file"]').first
+                if await fi.count() == 0:
+                    await self._screenshot("upload_failed_no_input")
+                    logger.warning("Žádný file input nenalezen v DOM")
+                    return
+
+            try:
+                await fi.set_input_files(photo_paths)
+                upload_triggered = True
+                logger.info(f"Soubory nastaveny přímým set_input_files ({len(photo_paths)} fotek)")
+            except Exception as e:
+                logger.warning(f"set_input_files selhal: {e}")
                 await self._screenshot("upload_failed")
-                logger.warning("Žádný file input nenalezen v DOM")
                 return
 
-        try:
-            await fi.set_input_files(photo_paths)
-            logger.info(f"Soubory nastaveny na file input ({len(photo_paths)} fotek) – čekám na dokončení uploadu...")
-
-            # Počkat na dokončení AJAX uploadu – networkidle znamená, že server
-            # přijal všechny soubory a odpověděl. Bez tohoto čekání se record
-            # submitne před dokončením uploadu → fotky skončí v galerii, ale
-            # nejsou přiloženy k záznamu.
-            try:
-                await self.page.wait_for_load_state("networkidle", timeout=120_000)
-                logger.info("Síťový provoz ustál – upload dokončen")
-            except PlaywrightTimeoutError:
-                logger.warning("Timeout (120s) čekání na networkidle – pokračuji i tak")
-
-            # Extra buffer po networkidle, aby UI stihlo zpracovat odpověď serveru
-            await self.page.wait_for_timeout(2_000)
-            await self._screenshot("after_upload")
+        if not upload_triggered:
+            await self._screenshot("upload_failed")
+            logger.warning("Nepodařilo se nahrát fotky")
             return
 
-        except Exception as e:
-            logger.warning(f"Upload selhal: {e}")
+        # ── Čekání na dokončení AJAX uploadu ────────────────────────────────────
+        # networkidle = server přijal všechny soubory a odpověděl.
+        logger.info("Čekám na dokončení uploadu (networkidle, max 180s)…")
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=180_000)
+            logger.info("Síťový provoz ustál – upload dokončen")
+        except PlaywrightTimeoutError:
+            logger.warning("Timeout (180s) čekání na networkidle – pokračuji i tak")
 
-        await self._screenshot("upload_failed")
-        logger.warning("Nepodařilo se nahrát fotky")
+        # Extra buffer: React musí zpracovat odpověď serveru a zapsat file IDs do stavu
+        await self.page.wait_for_timeout(3_000)
+        await self._screenshot("after_upload")
 
     async def _submit_entry(self) -> None:
-        """Odešle formulář záznamu."""
+        """Odešle formulář záznamu a počká na uložení na serveru."""
         submit_selectors = [
             'button:has-text("Zveřejnit")',   # domeum.app – primární tlačítko
             'button[type="submit"]',
@@ -525,19 +556,30 @@ class DomeumClient:
             'button:has-text("Submit")',
             'button:has-text("OK")',
         ]
+        # Preferujeme tlačítko uvnitř aktivního dialogu
+        dialog = self.page.locator('[role="dialog"]').last
         for sel in submit_selectors:
-            locator = self.page.locator(sel).last  # Poslední submit button v modalu
+            if await dialog.count() > 0:
+                locator = dialog.locator(sel).last
+            else:
+                locator = self.page.locator(sel).last
             if await locator.count() > 0:
                 await locator.click(force=True)
-                await self._wait_idle()
-                await self.page.wait_for_timeout(2_000)
                 logger.debug(f"Záznam odeslán přes: {sel}")
-                return
+                break
+        else:
+            # Fallback: Enter
+            await self.page.keyboard.press("Enter")
+            logger.debug("Záznam odeslán přes Enter")
 
-        # Fallback: Enter
-        await self.page.keyboard.press("Enter")
+        # Počkáme na dokončení uložení na serveru (forma odešle data + foto IDs)
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=60_000)
+            logger.info("Záznam uložen na server (networkidle po submitu)")
+        except PlaywrightTimeoutError:
+            logger.warning("Timeout 60s po submitu – pokračuji")
         await self._wait_idle()
-        logger.debug("Záznam odeslán přes Enter")
+        await self.page.wait_for_timeout(2_000)
 
     # ─────────────────────────────── Oprava záznamů ──────────────────────────
 
