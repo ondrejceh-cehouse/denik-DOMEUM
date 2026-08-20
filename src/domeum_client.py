@@ -672,9 +672,10 @@ class DomeumClient:
         """
         Přidá fotky k existujícímu záznamu stavebního deníku.
 
-        Domeum.app DETAIL stránka (/records/{uuid}) je rovnou v editačním módu –
-        zobrazuje TipTap editor, file input a tlačítko "Update Record".
-        Není třeba klikat žádný edit button – stačí nahrát fotky a uložit.
+        Domeum.app detail stránka (/records/{uuid}) je v READ módu bez file inputu.
+        Pro editaci musíme kliknout:
+          A) "Update Record" → otevře edit form/modal s file inputem
+          B) "common:moreActions" (= "...") → dropdown → "Upravit" → edit modal
         """
         logger.info(f"🔧 Opravuji záznam {record_uuid[:8]}… ({len(photo_paths)} fotek)")
 
@@ -684,14 +685,13 @@ class DomeumClient:
             else url.rstrip('/') + '/records'
         detail_url = f"{records_base}/{record_uuid}"
 
-        logger.info(f"  Přecházím na detail záznamu: {detail_url}")
+        logger.info(f"  Přecházím na detail: {detail_url}")
         await self.page.goto(detail_url, wait_until="domcontentloaded")
         await self._wait_idle()
-        # Čekáme déle – TipTap editor + file input se inicializují asynchronně
-        await self.page.wait_for_timeout(4_000)
+        await self.page.wait_for_timeout(3_000)
         await self._screenshot(f"repair_detail_{record_uuid[:8]}")
 
-        # ── 2. Diagnostika: buttony + file inputy ───────────────────────────────
+        # ── 2. Diagnostika ───────────────────────────────────────────────────────
         all_btns = await self.page.evaluate("""() =>
             Array.from(document.querySelectorAll('button, [role="button"]'))
                 .map(b => ({
@@ -700,29 +700,76 @@ class DomeumClient:
                     visible: b.getBoundingClientRect().width > 0,
                 }))
         """)
-        fi_count = await self.page.locator('input[type="file"]').count()
         logger.info(f"  Buttony ({len(all_btns)}): "
                     + str([f"{b['text']!r}({b['label']!r})" for b in all_btns[:20]]))
-        logger.info(f"  File inputs v DOM: {fi_count}")
+        logger.info(f"  File inputs v DOM: {await self.page.locator('input[type=\"file\"]').count()}")
 
-        # ── 3. Ověř, že file input existuje; pokud ne, scrolluj dolů ────────────
-        if fi_count == 0:
-            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await self.page.wait_for_timeout(1_500)
-            fi_count = await self.page.locator('input[type="file"]').count()
-            logger.info(f"  File inputs po scrollu: {fi_count}")
+        # ── 3a. Přístup A: klikni "Update Record" → čekej na file input ─────────
+        update_btn = self.page.locator('button:has-text("Update Record")').first
+        if await update_btn.count() > 0:
+            logger.info("  Klikám 'Update Record'...")
+            await update_btn.click()
+            await self.page.wait_for_timeout(2_000)
+            await self._screenshot(f"repair_after_update_{record_uuid[:8]}")
 
-        if fi_count == 0:
-            logger.error(f"File input nenalezen na detail stránce {record_uuid}")
-            await self._screenshot(f"repair_no_input_{record_uuid[:8]}")
-            return False
+            fi = await self.page.locator('input[type="file"]').count()
+            logger.info(f"  File inputs po 'Update Record': {fi}")
+            if fi > 0:
+                await self._upload_photos(photo_paths)
+                await self._submit_entry()
+                logger.info(f"✅ Záznam {record_uuid[:8]} opraven přes 'Update Record'")
+                return True
 
-        # ── 4. Nahrej fotky ──────────────────────────────────────────────────────
-        # Stránka je v editačním módu – rovnou uploadujeme, bez klikání na edit btn.
-        await self._upload_photos(photo_paths)
+        # ── 3b. Přístup B: "common:moreActions" → dropdown → "Upravit" ──────────
+        # "common:moreActions" je i18n klíč pro "..." button (překlad se nenačetl)
+        more_btn = self.page.locator(
+            'button:has-text("common:moreActions"), '
+            'button[aria-label*="more" i], button[aria-label*="actions" i], '
+            'button[aria-label*="možnosti" i], button[aria-label*="menu" i]'
+        ).first
+        if await more_btn.count() > 0:
+            coords = await more_btn.evaluate(
+                "b => { const r = b.getBoundingClientRect(); "
+                "return r.width > 0 ? {x: r.x + r.width/2, y: r.y + r.height/2} : null; }"
+            )
+            if coords:
+                logger.info(f"  Klikám 'moreActions' na ({coords['x']:.0f},{coords['y']:.0f})")
+                await self.page.mouse.click(coords["x"], coords["y"])
+                await self.page.wait_for_timeout(1_000)
+                await self._screenshot(f"repair_more_menu_{record_uuid[:8]}")
 
-        # ── 5. Uložit přes "Update Record" (primární) nebo jiný submit ──────────
-        await self._submit_entry()
+                # Hledáme "Upravit" v otevřeném menu
+                for sel in [
+                    '[role="menuitem"]:has-text("Upravit")',
+                    '[role="option"]:has-text("Upravit")',
+                    'li:has-text("Upravit")',
+                    'button:has-text("Upravit")',
+                    '[role="menuitem"]:has-text("Edit")',
+                    'li:has-text("Edit")',
+                ]:
+                    loc = self.page.locator(sel).first
+                    if await loc.count() > 0:
+                        logger.info(f"  'Upravit' nalezeno: {sel}")
+                        await loc.click()
+                        await self.page.wait_for_timeout(2_000)
+                        await self._screenshot(f"repair_after_upravit_{record_uuid[:8]}")
+                        fi = await self.page.locator('input[type="file"]').count()
+                        logger.info(f"  File inputs po 'Upravit': {fi}")
+                        if fi > 0:
+                            await self._upload_photos(photo_paths)
+                            await self._submit_entry()
+                            logger.info(f"✅ Záznam {record_uuid[:8]} opraven přes 'Upravit'")
+                            return True
+                        break
 
-        logger.info(f"✅ Záznam {record_uuid[:8]} opraven ({len(photo_paths)} fotek)")
-        return True
+                # Logni co se zobrazilo v menu (pro debugging)
+                menu_items = await self.page.evaluate("""() =>
+                    Array.from(document.querySelectorAll(
+                        '[role="menuitem"], [role="option"], [role="menu"] li'
+                    )).map(el => el.textContent.trim().substring(0, 30))
+                """)
+                logger.info(f"  Položky v menu: {menu_items}")
+
+        logger.error(f"Nepodařilo se otevřít edit form s file inputem pro {record_uuid}")
+        await self._screenshot(f"repair_failed_{record_uuid[:8]}")
+        return False
