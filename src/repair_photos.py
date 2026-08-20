@@ -116,6 +116,9 @@ async def main():
                 logger.error("Přihlášení selhalo")
                 sys.exit(1)
 
+            # Načti projekty nejdříve – stejný pattern jako main.py (zajistí načtení home stránky)
+            await domeum.get_all_projects()
+
             if not await domeum.select_project_by_name(REPAIR_PROJECT_NAME):
                 logger.error(f"Projekt '{REPAIR_PROJECT_NAME}' nenalezen")
                 sys.exit(1)

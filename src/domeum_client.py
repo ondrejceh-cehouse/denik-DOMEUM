@@ -578,7 +578,7 @@ class DomeumClient:
             const a = document.querySelector('a[href*="/records/{record_uuid}"]');
             if (a) a.scrollIntoView({{behavior: 'instant', block: 'center'}});
         }}""")
-        await self.page.wait_for_timeout(800)
+        await self.page.wait_for_timeout(2_000)
         await self._screenshot(f"repair_before_dots_{record_uuid[:8]}")
 
         # ── 4. Klikni na "..." (overflow) button záznamu ──
