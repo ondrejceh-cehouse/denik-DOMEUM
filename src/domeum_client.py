@@ -704,21 +704,35 @@ class DomeumClient:
                     + str([f"{b['text']!r}({b['label']!r})" for b in all_btns[:20]]))
         logger.info(f"  File inputs v DOM: {await self.page.locator('input[type=\"file\"]').count()}")
 
-        # ── 3a. Přístup A: klikni "Update Record" → čekej na file input ─────────
+        # ── 3a. Přístup A: klikni "Update Record" (tužka) → čekej na edit form ──
         update_btn = self.page.locator('button:has-text("Update Record")').first
         if await update_btn.count() > 0:
             logger.info("  Klikám 'Update Record'...")
             await update_btn.click()
-            await self.page.wait_for_timeout(2_000)
+
+            # Čekáme na dokončení navigace nebo otevření modalu
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=10_000)
+            except PlaywrightTimeoutError:
+                pass
+            await self.page.wait_for_timeout(3_000)
             await self._screenshot(f"repair_after_update_{record_uuid[:8]}")
 
-            fi = await self.page.locator('input[type="file"]').count()
+            # Aktivní čekání na file input (modal se může načítat déle)
+            fi = 0
+            for _ in range(5):
+                fi = await self.page.locator('input[type="file"]').count()
+                if fi > 0:
+                    break
+                await self.page.wait_for_timeout(2_000)
+
             logger.info(f"  File inputs po 'Update Record': {fi}")
             if fi > 0:
                 await self._upload_photos(photo_paths)
                 await self._submit_entry()
                 logger.info(f"✅ Záznam {record_uuid[:8]} opraven přes 'Update Record'")
                 return True
+            await self._screenshot(f"repair_update_no_input_{record_uuid[:8]}")
 
         # ── 3b. Přístup B: "common:moreActions" → dropdown → "Upravit" ──────────
         # "common:moreActions" je i18n klíč pro "..." button (překlad se nenačetl)
