@@ -672,9 +672,12 @@ class DomeumClient:
         """
         Přidá fotky k existujícímu záznamu stavebního deníku.
 
-        Pozorování ze screenshotů: detail stránka (/records/{uuid}) má v levém
-        sidebaru sekci "Photos". Kliknutím na ni se otevře oblast pro nahrávání fotek.
-        "Update Record" (tužka) neotevírá modal – jde o inline edit textu.
+        Ověřený postup (z analýzy živé domeum.app v češtině):
+          1. Naviguj na /records/{uuid}
+          2. Klikni "Upravit" (otevře modal "Upravit záznam")
+          3. V modalu klikni "Přidat přílohu" (spustí file chooser)
+          4. Nastav soubory přes file chooser
+          5. Klikni "Zveřejnit" (uloží změny)
         """
         logger.info(f"🔧 Opravuji záznam {record_uuid[:8]}… ({len(photo_paths)} fotek)")
 
@@ -690,106 +693,86 @@ class DomeumClient:
         await self.page.wait_for_timeout(3_000)
         await self._screenshot(f"repair_detail_{record_uuid[:8]}")
 
-        # ── 2. Zkus sekci "Photos" v sidebaru ────────────────────────────────────
-        # Screenshot ukázal: levý sidebar má položku "Photos" – přímá cesta k uploadu
-        photos_link = self.page.locator(
-            'nav a:has-text("Photos"), '
-            'aside a:has-text("Photos"), '
-            'a:has-text("Photos"), '
-            '[role="link"]:has-text("Photos")'
+        # ── 2. Klikni "Upravit" → otevře modal ───────────────────────────────────
+        edit_btn = self.page.locator(
+            'button:has-text("Upravit"), button:has-text("Update Record")'
         ).first
-        if await photos_link.count() > 0:
-            logger.info("  Klikám na 'Photos' v sidebaru...")
-            await photos_link.click()
-            await self.page.wait_for_timeout(2_000)
-            await self._screenshot(f"repair_photos_section_{record_uuid[:8]}")
-
-            # Hledáme tlačítko pro nahrání / file input v photos sekci
-            upload_triggered = False
-
-            # a) expect_file_chooser přes label nebo tlačítko upload
-            for upload_sel in [
-                'label[for="document-upload-input"]',
-                'label[for*="upload"]',
-                'button:has-text("Add Photo")',
-                'button:has-text("Upload")',
-                'button:has-text("Přidat")',
-                'button[aria-label*="upload" i]',
-                'button[aria-label*="add" i]',
-            ]:
-                loc = self.page.locator(upload_sel).first
-                if await loc.count() > 0:
-                    logger.info(f"  Spouštím upload přes: {upload_sel}")
-                    try:
-                        async with self.page.expect_file_chooser(timeout=8_000) as fc_info:
-                            await loc.click()
-                        fc = await fc_info.value
-                        await fc.set_files(photo_paths)
-                        upload_triggered = True
-                        logger.info(f"  ✓ Soubory předány file chooseru ({len(photo_paths)} fotek)")
-                        break
-                    except PlaywrightTimeoutError:
-                        logger.warning(f"  File chooser se neotevřel pro {upload_sel}")
-
-            # b) Přímý file input v sekci
-            if not upload_triggered:
-                fi = self.page.locator('input[type="file"]').first
-                if await fi.count() > 0:
-                    logger.info("  Nastavuji soubory přímo na file input...")
-                    await fi.set_files(photo_paths)
-                    upload_triggered = True
-
-            if upload_triggered:
-                logger.info("  Čekám na dokončení nahrávání...")
-                try:
-                    await self.page.wait_for_load_state("networkidle", timeout=180_000)
-                except PlaywrightTimeoutError:
-                    pass
-                await self.page.wait_for_timeout(3_000)
-                await self._screenshot(f"repair_after_upload_{record_uuid[:8]}")
-                logger.info(f"✅ Záznam {record_uuid[:8]} – fotky nahrány přes Photos sekci")
-                return True
-
-            # Pokud jsme v Photos sekci ale nenašli upload prvek, logni stav
-            fi_count = await self.page.locator('input[type="file"]').count()
-            btn_texts = await self.page.evaluate("""() =>
-                Array.from(document.querySelectorAll('button, [role="button"], label'))
+        if await edit_btn.count() == 0:
+            logger.error(f"  Tlačítko 'Upravit' nenalezeno pro {record_uuid}")
+            all_btns = await self.page.evaluate("""() =>
+                Array.from(document.querySelectorAll('button'))
                     .map(b => b.textContent.trim().substring(0, 40))
-                    .filter(t => t.length > 0)
             """)
-            logger.info(f"  File inputs v Photos sekci: {fi_count}")
-            logger.info(f"  Prvky (button/label): {btn_texts[:25]}")
-            await self._screenshot(f"repair_photos_no_upload_{record_uuid[:8]}")
+            logger.info(f"  Dostupná tlačítka: {all_btns}")
+            await self._screenshot(f"repair_no_edit_btn_{record_uuid[:8]}")
+            return False
 
-        # ── 3. Záloha: URL sekce fotek /records/{uuid}/photos ────────────────────
-        photos_url = f"{records_base}/{record_uuid}/photos"
-        logger.info(f"  Zkouším přímou URL fotek: {photos_url}")
-        resp = await self.page.goto(photos_url, wait_until="domcontentloaded")
-        await self._wait_idle()
+        logger.info("  Klikám 'Upravit'...")
+        await edit_btn.click()
         await self.page.wait_for_timeout(2_000)
-        await self._screenshot(f"repair_photos_url_{record_uuid[:8]}")
+        await self._screenshot(f"repair_modal_open_{record_uuid[:8]}")
 
-        fi_count = await self.page.locator('input[type="file"]').count()
-        logger.info(f"  File inputs na {photos_url}: {fi_count}")
+        # ── 3. V modalu klikni "Přidat přílohu" → file chooser ───────────────────
+        priloha_btn = self.page.locator(
+            'button:has-text("Přidat přílohu"), '
+            'button:has-text("Add attachment"), '
+            'button:has-text("Přidat foto"), '
+            'label[for="document-upload-input"]'
+        ).first
 
-        if fi_count > 0:
-            await self._upload_photos(photo_paths)
-            await self._screenshot(f"repair_after_upload_url_{record_uuid[:8]}")
-            logger.info(f"✅ Záznam {record_uuid[:8]} opraven přes /photos URL")
+        if await priloha_btn.count() == 0:
+            logger.error(f"  Tlačítko 'Přidat přílohu' nenalezeno v modalu")
+            modal_btns = await self.page.evaluate("""() =>
+                Array.from(document.querySelectorAll('[role="dialog"] button, [role="dialog"] label'))
+                    .map(b => b.textContent.trim().substring(0, 40))
+            """)
+            logger.info(f"  Tlačítka v modalu: {modal_btns}")
+            await self._screenshot(f"repair_no_priloha_{record_uuid[:8]}")
+            return False
+
+        logger.info("  Klikám 'Přidat přílohu' (expect_file_chooser)...")
+        try:
+            async with self.page.expect_file_chooser(timeout=8_000) as fc_info:
+                await priloha_btn.click()
+            fc = await fc_info.value
+            await fc.set_files(photo_paths)
+            logger.info(f"  ✓ Soubory předány ({len(photo_paths)} fotek)")
+        except PlaywrightTimeoutError:
+            # Záloha: přímý file input
+            logger.warning("  File chooser se neotevřel, zkouším přímý file input...")
+            fi = self.page.locator('input[type="file"]').first
+            if await fi.count() > 0:
+                await fi.set_files(photo_paths)
+                logger.info(f"  ✓ Soubory nastaveny přímo ({len(photo_paths)} fotek)")
+            else:
+                logger.error("  Žádný file input nenalezen")
+                await self._screenshot(f"repair_no_file_input_{record_uuid[:8]}")
+                return False
+
+        # ── 4. Čekej na nahrání a klikni "Zveřejnit" ─────────────────────────────
+        logger.info("  Čekám na nahrání fotek (networkidle)...")
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=180_000)
+        except PlaywrightTimeoutError:
+            pass
+        await self.page.wait_for_timeout(3_000)
+        await self._screenshot(f"repair_before_submit_{record_uuid[:8]}")
+
+        submit_btn = self.page.locator(
+            'button:has-text("Zveřejnit"), button:has-text("Uložit"), button:has-text("Save")'
+        ).first
+        if await submit_btn.count() > 0:
+            logger.info("  Klikám 'Zveřejnit'...")
+            await submit_btn.click()
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=60_000)
+            except PlaywrightTimeoutError:
+                pass
+            await self.page.wait_for_timeout(2_000)
+            await self._screenshot(f"repair_done_{record_uuid[:8]}")
+            logger.info(f"✅ Záznam {record_uuid[:8]} opraven – fotky přiloženy")
             return True
-
-        # ── 4. Logni vše viditelné pro další debugging ────────────────────────────
-        all_links = await self.page.evaluate("""() =>
-            Array.from(document.querySelectorAll('a, button, label'))
-                .map(el => ({
-                    tag: el.tagName,
-                    text: el.textContent.trim().substring(0, 40),
-                    href: el.getAttribute('href') || '',
-                }))
-                .filter(el => el.text.length > 0)
-        """)
-        logger.info(f"  Všechny prvky ({len(all_links)}): {all_links[:30]}")
-
-        logger.error(f"Nepodařilo se přidat fotky k záznamu {record_uuid}")
-        await self._screenshot(f"repair_failed_{record_uuid[:8]}")
-        return False
+        else:
+            logger.error("  Tlačítko 'Zveřejnit' nenalezeno po uploadu")
+            await self._screenshot(f"repair_no_submit_{record_uuid[:8]}")
+            return False
