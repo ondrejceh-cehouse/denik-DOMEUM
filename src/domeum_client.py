@@ -715,6 +715,7 @@ class DomeumClient:
         # ── 3. V modalu klikni "Přidat přílohu" → file chooser ───────────────────
         priloha_btn = self.page.locator(
             'button:has-text("Přidat přílohu"), '
+            'button:has-text("Add Attachments"), '
             'button:has-text("Add attachment"), '
             'button:has-text("Přidat foto"), '
             'label[for="document-upload-input"]'
@@ -759,7 +760,7 @@ class DomeumClient:
         await self._screenshot(f"repair_before_submit_{record_uuid[:8]}")
 
         submit_btn = self.page.locator(
-            'button:has-text("Zveřejnit"), button:has-text("Uložit"), button:has-text("Save")'
+            'button:has-text("Zveřejnit"), button:has-text("Publish"), button:has-text("Uložit"), button:has-text("Save")'
         ).first
         if await submit_btn.count() > 0:
             logger.info("  Klikám 'Zveřejnit'...")
