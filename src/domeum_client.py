@@ -500,21 +500,28 @@ class DomeumClient:
 
         upload_triggered = False
 
-        # ── Pokus 1: expect_file_chooser přes label (nejspolehlivější) ──────────
-        # Klikneme na label[for="document-upload-input"], čímž se otevře file dialog.
-        # Playwright ho zachytí a naplní soubory – tato cesta správně spustí všechny
-        # React event handlery.
-        label_loc = self.page.locator('label[for="document-upload-input"]').first
-        if await label_loc.count() > 0:
-            try:
-                async with self.page.expect_file_chooser(timeout=8_000) as fc_info:
-                    await label_loc.click()
-                fc = await fc_info.value
-                await fc.set_files(photo_paths)
-                upload_triggered = True
-                logger.info("Soubory nastaveny přes file chooser (label)")
-            except Exception as e:
-                logger.warning(f"expect_file_chooser přes label selhal: {e}")
+        # ── Pokus 1: expect_file_chooser přes viditelné tlačítko "Add Attachments" ─
+        # Klikneme na viditelné tlačítko (správně spustí React onChange handler).
+        btn_selectors = [
+            'button:has-text("Add Attachments")',
+            'button:has-text("Přidat přílohu")',
+            'button:has-text("Add attachment")',
+            'button:has-text("Přidat foto")',
+            'label[for="document-upload-input"]',
+        ]
+        for btn_sel in btn_selectors:
+            btn_loc = self.page.locator(btn_sel).first
+            if await btn_loc.count() > 0:
+                try:
+                    async with self.page.expect_file_chooser(timeout=8_000) as fc_info:
+                        await btn_loc.click()
+                    fc = await fc_info.value
+                    await fc.set_files(photo_paths)
+                    upload_triggered = True
+                    logger.info(f"Soubory nastaveny přes file chooser ({btn_sel})")
+                except Exception as e:
+                    logger.warning(f"expect_file_chooser přes '{btn_sel}' selhal: {e}")
+                break  # Zkusíme jen první nalezené tlačítko; fallback níže pokud selhalo
 
         # ── Pokus 2: scoped locator na aktivní dialog ────────────────────────────
         # Fallback: hledáme file input uvnitř modalu ([role="dialog"]).
@@ -553,22 +560,24 @@ class DomeumClient:
             return
 
         # ── Čekání na dokončení AJAX uploadu ────────────────────────────────────
-        # networkidle = server přijal všechny soubory a odpověděl.
-        logger.info("Čekám na dokončení uploadu (networkidle, max 180s)…")
+        # React SPA nikdy nedosáhne "networkidle" (má trvalé WS/polling spojení),
+        # proto čekáme max 60s a pokračujeme i při timeoutu.
+        logger.info("Čekám na dokončení uploadu (networkidle, max 60s)…")
         try:
-            await self.page.wait_for_load_state("networkidle", timeout=180_000)
+            await self.page.wait_for_load_state("networkidle", timeout=60_000)
             logger.info("Síťový provoz ustál – upload dokončen")
         except PlaywrightTimeoutError:
-            logger.warning("Timeout (180s) čekání na networkidle – pokračuji i tak")
+            logger.warning("Timeout (60s) networkidle po uploadu – pokračuji i tak")
 
         # Extra buffer: React musí zpracovat odpověď serveru a zapsat file IDs do stavu
-        await self.page.wait_for_timeout(3_000)
+        await self.page.wait_for_timeout(5_000)
         await self._screenshot("after_upload")
 
     async def _submit_entry(self) -> None:
         """Odešle formulář záznamu a počká na uložení na serveru."""
         submit_selectors = [
-            'button:has-text("Zveřejnit")',    # domeum.app – nový záznam
+            'button:has-text("Zveřejnit")',    # domeum.app – nový záznam (CZ)
+            'button:has-text("Publish")',       # domeum.app – nový záznam (EN, bot vidí angličtinu)
             'button:has-text("Update Record")', # domeum.app – editace záznamu (detail stránka)
             'button[type="submit"]',
             'button:has-text("Uložit")',
